@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MixTool - Auto Mastering</title>
+    <title>MixTool - Professional Mastering</title>
     <style>
         body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
         #progress-container { display: none; margin-top: 20px; }
@@ -13,14 +13,14 @@
 </head>
 <body>
 
-    <h1>Upload a Track for Auto Remix & Mastering</h1>
+    <h1>Upload a Track for Perfect Mastering</h1>
     
-    <label for="mixType">Select Mix Type:</label>
+    <label for="mixType">Select Mastering Style:</label>
     <select id="mixType">
-        <option value="Studio Master">Studio Master (Default)</option>
-        <option value="Lo-Fi">Lo-Fi (Soft, Vintage, Slow)</option>
-        <option value="Trap">Trap (Bass Boost, High Energy)</option>
-        <option value="Pop">Pop (Bright, Clean, Loud)</option>
+        <option value="Studio Master">Studio Master (Clean & Balanced)</option>
+        <option value="Lo-Fi">Lo-Fi (Warm, Vintage Feel)</option>
+        <option value="Trap">Trap (Crisp & Punchy)</option>
+        <option value="Pop">Pop (Bright & Radio-Ready)</option>
     </select>
     
     <input type="file" id="fileInput">
@@ -65,7 +65,7 @@
                 let url = window.URL.createObjectURL(blob);
                 let a = document.createElement("a");
                 a.href = url;
-                a.download = "processed_track.wav";
+                a.download = "final_master.wav";
                 document.body.appendChild(a);
                 a.click();
                 document.getElementById("status").innerText = "Download Ready!";

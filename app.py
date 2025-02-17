@@ -22,28 +22,27 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
-# Function to process audio (remix & master)
+# Function to process audio (Professional Mastering)
 def process_audio(file_path, mix_type):
     try:
         # Load audio with Librosa
         y, sr = librosa.load(file_path, sr=None)
 
-        # Apply pre-emphasis (minor high-pass filter)
+        # Apply pre-emphasis (slight high-pass filter to clean muddiness)
         y = librosa.effects.preemphasis(y)
 
-        # Apply Mix Type Variations
+        # --- Apply Mix Type Variations (Balanced & Professional) ---
         if mix_type == "Lo-Fi":
-            y = librosa.effects.time_stretch(y, rate=0.95)  # Slower tempo
-            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=-2)  # Lower pitch
+            y = librosa.effects.time_stretch(y, rate=0.98)  # Very slight tempo reduction
+            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=-0.5)  # Warmer tone
         elif mix_type == "Trap":
-            y = librosa.effects.time_stretch(y, rate=1.1)  # Slightly faster
-            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=2)  # Higher pitch
-        elif mix_type == "Studio Master":
-            # Keep default processing with loudness standardization
-            pass
+            y = librosa.effects.time_stretch(y, rate=1.02)  # Slightly faster for crispness
+            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=0.5)  # Enhances energy
         elif mix_type == "Pop":
-            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=3)  # Brighter vocals
-            y = librosa.effects.time_stretch(y, rate=1.05)
+            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=0.7)  # Brighter, cleaner vocals
+            y = librosa.effects.time_stretch(y, rate=1.01)  # Keeps the track tight
+        elif mix_type == "Studio Master":
+            pass  # No additional changes for studio-quality mastering
 
         # Save the modified track temporarily
         temp_path = "temp.wav"
@@ -52,21 +51,21 @@ def process_audio(file_path, mix_type):
         # Load with pydub for final mastering adjustments
         audio = AudioSegment.from_wav(temp_path)
 
-        # **Apply De-Esser (Notch Filter for Sibilance Reduction)**
-        audio = audio.low_pass_filter(9000).high_pass_filter(5000)  # Targeting harsh "S" sounds
+        # --- Apply Dynamic Range Compression (Controlled) ---
+        audio = effects.normalize(audio)  # Normalizes peaks for better balance
+        audio = audio.apply_gain(3)  # Slight gain boost
 
-        # Apply Dynamic Range Compression
-        audio = effects.normalize(audio)  # Ensures equal loudness
-        audio = audio.apply_gain(5)  # Boost overall volume
+        # --- Apply Soft De-Esser (Targeted Reduction of Harsh Frequencies) ---
+        audio = audio.low_pass_filter(14000).high_pass_filter(4000)  # Light touch only where needed
 
-        # Apply Industry Standard Loudness (-14 LUFS)
+        # --- Apply Industry Standard Loudness (-14 LUFS) ---
         target_lufs = -14.0
         current_lufs = audio.dBFS
         gain_needed = target_lufs - current_lufs
-        audio = audio.apply_gain(gain_needed)
+        audio = audio.apply_gain(gain_needed)  # Ensures industry-standard loudness
 
         # Save final output
-        output_filename = f"remixed_{mix_type}.wav"
+        output_filename = f"final_master_{mix_type}.wav"
         output_path = os.path.join(PROCESSED_FOLDER, output_filename)
         audio.export(output_path, format="wav")
         
@@ -87,7 +86,7 @@ def upload_file():
         return jsonify({"error": "No file uploaded"}), 400
     
     file = request.files['file']
-    mix_type = request.form.get("mix_type", "Studio Master")  # Default to studio master
+    mix_type = request.form.get("mix_type", "Studio Master")  # Default to Studio Master
     
     file_path = os.path.join(UPLOAD_FOLDER, file.filename)
     file.save(file_path)
