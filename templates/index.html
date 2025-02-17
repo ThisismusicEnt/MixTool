@@ -3,76 +3,132 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MixTool - Professional Mastering</title>
+    <title>MixTool - AI Mastering</title>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
-        #progress-container { display: none; margin-top: 20px; }
-        #progress-bar { width: 100%; background-color: #ddd; height: 25px; }
-        #progress-bar-fill { height: 100%; width: 0%; background-color: #4CAF50; }
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            margin: 0 auto;
+            max-width: 600px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1rem;
+        }
+        label {
+            margin-top: 1rem;
+        }
+        #progress-container {
+            display: none;
+            width: 100%;
+            max-width: 400px;
+            margin: 20px auto;
+        }
+        #progress-bar {
+            width: 100%;
+            background-color: #ddd;
+            height: 25px;
+            position: relative;
+        }
+        #progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background-color: #4CAF50;
+            transition: width 0.4s ease;
+        }
+        #status {
+            margin: 1rem 0;
+        }
     </style>
 </head>
 <body>
+    <div class="container">
+        <h1>AI-Powered Mix & Master</h1>
+        <p>
+            Upload your track and let our AI engine handle mixing and mastering.
+        </p>
 
-    <h1>Upload a Track for Perfect Mastering</h1>
-    
-    <label for="mixType">Select Mastering Style:</label>
-    <select id="mixType">
-        <option value="Studio Master">Studio Master (Clean & Balanced)</option>
-        <option value="Lo-Fi">Lo-Fi (Warm, Vintage Feel)</option>
-        <option value="Trap">Trap (Crisp & Punchy)</option>
-        <option value="Pop">Pop (Bright & Radio-Ready)</option>
-    </select>
-    
-    <input type="file" id="fileInput">
-    <button onclick="uploadFile()">Upload & Process</button>
+        <label for="mixType">Select Mix Style (Optional):</label>
+        <select id="mixType">
+            <option value="StudioMaster">StudioMaster (Default)</option>
+            <option value="Pop">Pop</option>
+            <option value="Trap">Trap</option>
+            <option value="Lo-Fi">Lo-Fi</option>
+        </select>
 
-    <div id="progress-container">
-        <p>Processing... Please wait</p>
-        <div id="progress-bar"><div id="progress-bar-fill"></div></div>
+        <input type="file" id="fileInput">
+        <button onclick="uploadFile()">Upload & Process</button>
+
+        <div id="progress-container">
+            <p>Processing... Please wait</p>
+            <div id="progress-bar"><div id="progress-bar-fill"></div></div>
+        </div>
+
+        <p id="status"></p>
     </div>
-
-    <p id="status"></p>
 
     <script>
         function uploadFile() {
-            let fileInput = document.getElementById("fileInput").files[0];
-            let mixType = document.getElementById("mixType").value;
-            let formData = new FormData();
-            formData.append("file", fileInput);
+            const fileInput = document.getElementById("fileInput");
+            const file = fileInput.files[0];
+            if (!file) {
+                alert("Please select a file first.");
+                return;
+            }
+
+            const mixType = document.getElementById("mixType").value;
+            const formData = new FormData();
+            formData.append("file", file);
             formData.append("mix_type", mixType);
 
-            let progressBar = document.getElementById("progress-container");
-            let progressFill = document.getElementById("progress-bar-fill");
-            progressBar.style.display = "block";
-            progressFill.style.width = "0%";
+            const progressContainer = document.getElementById("progress-container");
+            const progressBarFill = document.getElementById("progress-bar-fill");
+            const statusMsg = document.getElementById("status");
+            progressContainer.style.display = "block";
+            progressBarFill.style.width = "0%";
+            statusMsg.textContent = "";
 
             let progress = 0;
-            let interval = setInterval(() => {
-                progress += 10;
-                if (progress >= 100) clearInterval(interval);
-                progressFill.style.width = progress + "%";
+            const interval = setInterval(() => {
+                if (progress < 90) {
+                    progress += 10;
+                    progressBarFill.style.width = progress + "%";
+                } else {
+                    clearInterval(interval);
+                }
             }, 1000);
 
             fetch("/upload", {
                 method: "POST",
                 body: formData
             })
-            .then(response => response.blob())
-            .then(blob => {
+            .then(response => {
                 clearInterval(interval);
-                progressFill.style.width = "100%";
-
-                let url = window.URL.createObjectURL(blob);
-                let a = document.createElement("a");
+                progressBarFill.style.width = "100%";
+                if (!response.ok) {
+                    throw new Error("Processing failed");
+                }
+                return response.blob();
+            })
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
                 a.href = url;
                 a.download = "final_master.wav";
                 document.body.appendChild(a);
                 a.click();
-                document.getElementById("status").innerText = "Download Ready!";
+                document.body.removeChild(a);
+                statusMsg.textContent = "Download Ready!";
             })
-            .catch(error => console.error("Error:", error));
+            .catch(error => {
+                console.error("Error:", error);
+                statusMsg.textContent = "Error: " + error;
+            });
         }
     </script>
-
 </body>
 </html>
