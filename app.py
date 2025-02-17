@@ -22,10 +22,10 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
-# Function to process audio (Professional Mastering)
+# Function to apply mastering (Perfect Industry Standard)
 def process_audio(file_path, mix_type):
     try:
-        # Load audio with Librosa
+        # Load audio
         y, sr = librosa.load(file_path, sr=None)
 
         # Apply pre-emphasis (slight high-pass filter to clean muddiness)
@@ -36,38 +36,56 @@ def process_audio(file_path, mix_type):
             y = librosa.effects.time_stretch(y, rate=0.98)  # Very slight tempo reduction
             y = librosa.effects.pitch_shift(y, sr=sr, n_steps=-0.5)  # Warmer tone
         elif mix_type == "Trap":
-            y = librosa.effects.time_stretch(y, rate=1.02)  # Slightly faster for crispness
-            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=0.5)  # Enhances energy
+            # Trap should NOT have extra reverb
+            y = librosa.effects.time_stretch(y, rate=1.02)  # Slight tempo boost for crispness
+            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=0.5)  # Energy boost without over-processing
         elif mix_type == "Pop":
-            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=0.7)  # Brighter, cleaner vocals
-            y = librosa.effects.time_stretch(y, rate=1.01)  # Keeps the track tight
+            y = librosa.effects.pitch_shift(y, sr=sr, n_steps=0.7)  # Bright but natural vocals
+            y = librosa.effects.time_stretch(y, rate=1.01)  # Keeps rhythm tight
         elif mix_type == "Studio Master":
-            pass  # No additional changes for studio-quality mastering
+            pass  # No artificial processing, just mastering
 
         # Save the modified track temporarily
         temp_path = "temp.wav"
         sf.write(temp_path, y, sr)
 
-        # Load with pydub for final mastering adjustments
+        # Load with pydub for mastering
         audio = AudioSegment.from_wav(temp_path)
 
-        # --- Apply Dynamic Range Compression (Controlled) ---
-        audio = effects.normalize(audio)  # Normalizes peaks for better balance
-        audio = audio.apply_gain(3)  # Slight gain boost
+        # --- Apply Dynamic Range Compression (Industry Standard) ---
+        audio = effects.normalize(audio)  # Levels peaks properly
+        audio = audio.apply_gain(2)  # Gentle gain boost
 
-        # --- Apply Soft De-Esser (Targeted Reduction of Harsh Frequencies) ---
-        audio = audio.low_pass_filter(14000).high_pass_filter(4000)  # Light touch only where needed
+        # --- First Pass: De-Essing (Light Processing) ---
+        audio = audio.low_pass_filter(16000).high_pass_filter(4500)  # Removes harsh "S" frequencies
 
-        # --- Apply Industry Standard Loudness (-14 LUFS) ---
+        # --- Apply Loudness Normalization (-14 LUFS) ---
         target_lufs = -14.0
         current_lufs = audio.dBFS
         gain_needed = target_lufs - current_lufs
-        audio = audio.apply_gain(gain_needed)  # Ensures industry-standard loudness
+        audio = audio.apply_gain(gain_needed)  # Ensures loudness is within standard
+
+        # --- Save the Intermediate Master ---
+        intermediate_path = "processed/intermediate_master.wav"
+        audio.export(intermediate_path, format="wav")
+
+        # --- Second Pass: Final Check (Prevent Overprocessing) ---
+        final_audio = AudioSegment.from_wav(intermediate_path)
+
+        # --- Final Compression & De-Essing Pass ---
+        final_audio = effects.normalize(final_audio)  # Ensures balance after first pass
+        final_audio = final_audio.low_pass_filter(15500).high_pass_filter(5000)  # Re-check de-essing
+
+        # --- Final Loudness Adjustment (-14 LUFS) ---
+        final_lufs = -14.0
+        final_current_lufs = final_audio.dBFS
+        final_gain_needed = final_lufs - final_current_lufs
+        final_audio = final_audio.apply_gain(final_gain_needed)
 
         # Save final output
         output_filename = f"final_master_{mix_type}.wav"
         output_path = os.path.join(PROCESSED_FOLDER, output_filename)
-        audio.export(output_path, format="wav")
+        final_audio.export(output_path, format="wav")
         
         return output_path
     except Exception as e:
