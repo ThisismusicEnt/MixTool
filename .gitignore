@@ -1,0 +1,52 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+ENV/
+.venv/
+.env/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Byte-compiled / optimized / DLL files
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+
+# Packages
+*.egg-info/
+.eggs/
+
+# PyTest / Coverage / Reports
+.coverage
+.tox/
+.cache
+pytest_cache/
+
+# IDE / Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS / Linux system files
+.DS_Store
+.numbers
+*.un~
+Thumbs.db
+
+# Heroku-related (optional)
+Procfile.local
+.heroku/
+
+# You may also want to exclude any environment variable files
+# that store sensitive credentials:
+.env
