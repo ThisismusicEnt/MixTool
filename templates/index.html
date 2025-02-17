@@ -1,134 +1,207 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MixTool - AI Mastering</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            margin: 0 auto;
-            max-width: 600px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 1rem;
-        }
-        label {
-            margin-top: 1rem;
-        }
-        #progress-container {
-            display: none;
-            width: 100%;
-            max-width: 400px;
-            margin: 20px auto;
-        }
-        #progress-bar {
-            width: 100%;
-            background-color: #ddd;
-            height: 25px;
-            position: relative;
-        }
-        #progress-bar-fill {
-            height: 100%;
-            width: 0%;
-            background-color: #4CAF50;
-            transition: width 0.4s ease;
-        }
-        #status {
-            margin: 1rem 0;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Mix & Master</title>
+  <style>
+    /* Minimal Reset */
+    * {
+      margin: 0; 
+      padding: 0;
+      box-sizing: border-box;
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      background: linear-gradient(160deg, #f0f2f5 0%, #ffffff 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      color: #333;
+    }
+
+    .app-container {
+      background-color: #fff;
+      width: 100%;
+      max-width: 480px;
+      border-radius: 14px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+      padding: 2rem;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 1.5rem;
+    }
+
+    h1 {
+      font-size: 1.75rem;
+      text-align: center;
+      margin-bottom: 0.5rem;
+    }
+    p.subtitle {
+      font-size: 0.95rem;
+      text-align: center;
+      color: #666;
+      margin-bottom: 1.5rem;
+    }
+
+    label {
+      display: block;
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+      color: #444;
+    }
+
+    select, input[type="file"] {
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 0.5rem 0.75rem;
+      font-size: 1rem;
+      width: 100%;
+      cursor: pointer;
+      transition: border 0.2s ease;
+    }
+    select:focus, input[type="file"]:focus {
+      outline: none;
+      border-color: #3498db;
+    }
+
+    button {
+      background-color: #3498db;
+      color: #fff;
+      font-size: 1rem;
+      border: none;
+      border-radius: 8px;
+      padding: 0.75rem;
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+      margin-top: 0.5rem;
+    }
+    button:hover {
+      background-color: #297fb8;
+    }
+
+    .progress-container {
+      display: none;
+      width: 100%;
+      margin-top: 1rem;
+    }
+    .progress-bar {
+      width: 100%;
+      background-color: #e5e7eb;
+      height: 12px;
+      border-radius: 8px;
+      overflow: hidden;
+      position: relative;
+    }
+    .progress-bar-fill {
+      width: 0%;
+      height: 100%;
+      background-color: #4caf50;
+      transition: width 0.4s ease;
+    }
+
+    .status {
+      text-align: center;
+      font-size: 0.95rem;
+      color: #666;
+      margin-top: 1rem;
+      min-height: 1.5rem; /* to avoid layout shift */
+    }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <h1>AI-Powered Mix & Master</h1>
-        <p>
-            Upload your track and let our AI engine handle mixing and mastering.
-        </p>
 
-        <label for="mixType">Select Mix Style (Optional):</label>
-        <select id="mixType">
-            <option value="StudioMaster">StudioMaster (Default)</option>
-            <option value="Pop">Pop</option>
-            <option value="Trap">Trap</option>
-            <option value="Lo-Fi">Lo-Fi</option>
-        </select>
+  <div class="app-container">
+    <h1>AI Mix & Master</h1>
+    <p class="subtitle">Give your track a professional polish.</p>
 
-        <input type="file" id="fileInput">
-        <button onclick="uploadFile()">Upload & Process</button>
+    <label for="mixType">Select Mix Style</label>
+    <select id="mixType">
+      <option value="StudioMaster">StudioMaster (Default)</option>
+      <option value="Pop">Pop</option>
+      <option value="Trap">Trap</option>
+      <option value="Lo-Fi">Lo-Fi</option>
+    </select>
 
-        <div id="progress-container">
-            <p>Processing... Please wait</p>
-            <div id="progress-bar"><div id="progress-bar-fill"></div></div>
-        </div>
+    <label for="fileInput">Choose Audio File</label>
+    <input type="file" id="fileInput" accept=".mp3, .wav, .m4a, .flac, .aac, .ogg" />
 
-        <p id="status"></p>
+    <button onclick="uploadFile()">Upload & Process</button>
+
+    <div class="progress-container" id="progress-container">
+      <div class="progress-bar">
+        <div class="progress-bar-fill" id="progress-bar-fill"></div>
+      </div>
     </div>
 
-    <script>
-        function uploadFile() {
-            const fileInput = document.getElementById("fileInput");
-            const file = fileInput.files[0];
-            if (!file) {
-                alert("Please select a file first.");
-                return;
-            }
+    <div class="status" id="status"></div>
+  </div>
 
-            const mixType = document.getElementById("mixType").value;
-            const formData = new FormData();
-            formData.append("file", file);
-            formData.append("mix_type", mixType);
+  <script>
+    function uploadFile() {
+      const fileInput = document.getElementById("fileInput");
+      const file = fileInput.files[0];
+      if (!file) {
+        alert("Please select a file first.");
+        return;
+      }
 
-            const progressContainer = document.getElementById("progress-container");
-            const progressBarFill = document.getElementById("progress-bar-fill");
-            const statusMsg = document.getElementById("status");
-            progressContainer.style.display = "block";
-            progressBarFill.style.width = "0%";
-            statusMsg.textContent = "";
+      const mixType = document.getElementById("mixType").value;
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("mix_type", mixType);
 
-            let progress = 0;
-            const interval = setInterval(() => {
-                if (progress < 90) {
-                    progress += 10;
-                    progressBarFill.style.width = progress + "%";
-                } else {
-                    clearInterval(interval);
-                }
-            }, 1000);
+      const progressContainer = document.getElementById("progress-container");
+      const progressBarFill = document.getElementById("progress-bar-fill");
+      const statusMsg = document.getElementById("status");
 
-            fetch("/upload", {
-                method: "POST",
-                body: formData
-            })
-            .then(response => {
-                clearInterval(interval);
-                progressBarFill.style.width = "100%";
-                if (!response.ok) {
-                    throw new Error("Processing failed");
-                }
-                return response.blob();
-            })
-            .then(blob => {
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = "final_master.wav";
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                statusMsg.textContent = "Download Ready!";
-            })
-            .catch(error => {
-                console.error("Error:", error);
-                statusMsg.textContent = "Error: " + error;
-            });
+      progressContainer.style.display = "block";
+      progressBarFill.style.width = "0%";
+      statusMsg.textContent = "";
+
+      // Fake progress animation
+      let progress = 0;
+      const interval = setInterval(() => {
+        if (progress < 90) {
+          progress += 10;
+          progressBarFill.style.width = progress + "%";
+        } else {
+          clearInterval(interval);
         }
-    </script>
+      }, 800);
+
+      fetch("/upload", {
+        method: "POST",
+        body: formData
+      })
+      .then(response => {
+        clearInterval(interval);
+        progressBarFill.style.width = "100%";
+        if (!response.ok) {
+          throw new Error("Processing failed");
+        }
+        return response.blob();
+      })
+      .then(blob => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "final_master.wav";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        statusMsg.textContent = "Download Ready!";
+      })
+      .catch(error => {
+        console.error("Error:", error);
+        statusMsg.textContent = "Error: " + error;
+      });
+    }
+  </script>
+
 </body>
 </html>
