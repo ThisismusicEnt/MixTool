@@ -23,6 +23,9 @@ def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
+# ---------------------------------------------------------
+# 1) Convert Audio to WAV (16-bit, 44.1kHz) via pydub + FFmpeg
+# ---------------------------------------------------------
 def convert_audio_to_wav_pydub(input_path, output_path):
     """
     Uses pydub + FFmpeg to convert any supported format (MP3, WAV, FLAC, etc.) 
@@ -37,11 +40,14 @@ def convert_audio_to_wav_pydub(input_path, output_path):
         print(f"[convert_audio_to_wav_pydub] Error converting {input_path} -> {output_path}: {e}")
         return False
 
+# ---------------------------------------------------------
+# 2) Final Mastering Chain (Mild EQ + Normalization + -12 LUFS)
+# ---------------------------------------------------------
 def final_mastering_chain(input_wav, output_wav):
     """
     Fallback or final step:
     - High-pass ~40Hz to remove sub-rumble
-    - No low-pass to avoid muffling
+    - (No low-pass by default to avoid muffling)
     - Normalize => mild compression
     - +5 dB gain
     - Target ~-12 dBFS for extra loudness
@@ -83,12 +89,14 @@ def upload_file():
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
+    # 1) Save user file
     user_file = request.files["file"]
     mix_type = request.form.get("mix_type", "StudioMaster")
-
-    # 1) Save user file
     user_upload_path = os.path.join(UPLOAD_FOLDER, user_file.filename)
     user_file.save(user_upload_path)
+
+    # We'll grab the original filename stem (without extension)
+    original_stem = os.path.splitext(user_file.filename)[0]
 
     # 2) Convert user => WAV
     user_wav = os.path.join(PROCESSED_FOLDER, "user_input.wav")
@@ -139,7 +147,7 @@ def upload_file():
     else:
         print(f"[DEBUG] No reference found for {mix_type} => skipping AI match")
 
-    # 5) Fallback => copy user_wav -> ai_mastered_path if AI failed
+    # 5) If AI fails, fallback => copy user_wav -> ai_mastered_path
     if not matchering_succeeded:
         try:
             AudioSegment.from_wav(user_wav).export(ai_mastered_path, format="wav")
@@ -149,10 +157,14 @@ def upload_file():
             return jsonify({"error": "Fallback copy error"}), 500
 
     # 6) Final mastering chain
-    final_path = os.path.join(PROCESSED_FOLDER, f"final_{mix_type}.wav")
+    #    We'll name the final file as <original_stem>_master.wav
+    final_filename = f"{original_stem}_master.wav"
+    final_path = os.path.join(PROCESSED_FOLDER, final_filename)
+
     if not final_mastering_chain(ai_mastered_path, final_path):
         return jsonify({"error": "Final mastering chain failed"}), 500
 
+    # Return the final mastered file with the updated name
     return send_file(final_path, as_attachment=True)
 
 port = 8080 if not is_port_in_use(8080) else 5001
