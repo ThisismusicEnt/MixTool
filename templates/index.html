@@ -22,7 +22,7 @@
             border-radius: 8px;
             margin-top: 20px;
         }
-        input, button {
+        input, select, button {
             padding: 10px;
             margin: 10px;
             width: 80%;
@@ -33,11 +33,21 @@
 <body>
     <div class="container">
         <h1>Welcome to MixTool</h1>
-        <p>Upload your audio track and get a professionally mixed & mastered version instantly.</p>
+        <p>Upload your audio track and select your desired mix/mastering style.</p>
         
         <div class="upload-section">
             <form action="/upload" method="POST" enctype="multipart/form-data">
                 <input type="file" name="file" required>
+
+                <label for="mix_type">Choose Mix Style:</label>
+                <select name="mix_type">
+                    <option value="StudioMaster">Studio Master</option>
+                    <option value="Trap">Trap Mix</option>
+                    <option value="HipHop">Hip-Hop Mix</option>
+                    <option value="Pop">Pop Mix</option>
+                    <option value="Custom">Custom Mix</option>
+                </select>
+
                 <button type="submit">Upload & Process</button>
             </form>
         </div>
