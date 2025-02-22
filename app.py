@@ -6,61 +6,57 @@ import soundfile as sf
 from pydub import AudioSegment, effects
 import matchering as mg
 from flask import Flask, request, jsonify, send_file, render_template, send_from_directory
-from flask_cors import CORS
-import subprocess
-import logging
+from flask_cors import CORS  # Ensuring CORS is imported
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend integration
+CORS(app)  # Enables CORS for cross-origin requests
 
 UPLOAD_FOLDER = "uploads"
 PROCESSED_FOLDER = "processed"
 REFERENCE_FOLDER = "reference_tracks"
+STATIC_FOLDER = "static"  # Ensure static files load
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 os.makedirs(REFERENCE_FOLDER, exist_ok=True)
+os.makedirs(STATIC_FOLDER, exist_ok=True)  # Ensures static folder exists
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
-# Ensure ffmpeg is installed
-FFMPEG_PATH = subprocess.run(["which", "ffmpeg"], capture_output=True, text=True).stdout.strip()
-if not FFMPEG_PATH:
-    logging.warning("ffmpeg is not installed. Audio processing may fail!")
-
-# Serve static files
+# Serve static files like logo
 @app.route('/static/<path:filename>')
 def serve_static(filename):
-    return send_from_directory(app.static_folder, filename)
+    return send_from_directory(STATIC_FOLDER, filename)
 
-@app.route('/favicon.ico')
-def favicon():
-    return send_from_directory(app.static_folder, 'favicon.ico')
-
-# Optional: if you want a route for the homepage
+# Home route
 @app.route("/")
 def home():
     return render_template("index.html")
 
 def convert_audio_to_wav_pydub(input_path, output_path):
+    """Converts any audio format (MP3, WAV, FLAC) to 16-bit 44.1kHz WAV using pydub."""
     try:
         audio = AudioSegment.from_file(input_path)
         audio = audio.set_frame_rate(44100).set_channels(2).set_sample_width(2)  # 16-bit
         audio.export(output_path, format="wav")
         return True
     except Exception as e:
-        print(f"[convert_audio_to_wav_pydub] Error converting {input_path} -> {output_path}: {e}")
+        print(f"[convert_audio_to_wav_pydub] Error: {e}")
         return False
 
 def final_mastering_chain(input_wav, output_wav):
+    """Applies basic mastering effects: high-pass filter, normalization, and volume boost."""
     try:
         audio = AudioSegment.from_wav(input_wav)
         audio = audio.high_pass_filter(40)
         audio = effects.normalize(audio)
         audio = audio.apply_gain(5)
+
+        # Normalize to -12 LUFS
         target_lufs = -12.0
         gain_needed = target_lufs - audio.dBFS
         audio = audio.apply_gain(gain_needed)
+
         audio.export(output_wav, format="wav")
         return True
     except Exception as e:
@@ -69,6 +65,7 @@ def final_mastering_chain(input_wav, output_wav):
 
 @app.route("/upload", methods=["POST"])
 def upload_file():
+    """Handles file upload, conversion, AI processing, and final mastering."""
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -77,12 +74,11 @@ def upload_file():
 
     user_upload_path = os.path.join(UPLOAD_FOLDER, user_file.filename)
     user_file.save(user_upload_path)
-
     original_stem = os.path.splitext(user_file.filename)[0]
 
     user_wav = os.path.join(PROCESSED_FOLDER, "user_input.wav")
     if not convert_audio_to_wav_pydub(user_upload_path, user_wav):
-        return jsonify({"error": "Failed to convert user file to WAV"}), 500
+        return jsonify({"error": "Failed to convert file to WAV"}), 500
 
     possible_exts = [".mp3", ".wav", ".flac", ".m4a"]
     ref_wav = os.path.join(PROCESSED_FOLDER, "reference.wav")
@@ -91,7 +87,7 @@ def upload_file():
     for ext in possible_exts:
         ref_original = os.path.join(REFERENCE_FOLDER, mix_type + ext)
         if os.path.exists(ref_original):
-            print(f"[DEBUG] Found reference for {mix_type}: {ref_original}")
+            print(f"[DEBUG] Found reference track: {ref_original}")
             if convert_audio_to_wav_pydub(ref_original, ref_wav):
                 found_ref = True
             break
@@ -100,6 +96,7 @@ def upload_file():
     matchering_succeeded = False
 
     def debug_file_stats(path, label):
+        """Debugging helper to check file properties."""
         try:
             stat = os.stat(path)
             print(f"[DEBUG] {label} => size: {stat.st_size} bytes")
@@ -116,14 +113,14 @@ def upload_file():
             print("[DEBUG] user_wav == ref_wav => skipping AI match.")
         else:
             try:
-                print("[DEBUG] Attempting mg.process(...)")
+                print("[DEBUG] Running matchering AI...")
                 mg.process(user_wav, ref_wav, ai_mastered_path)
                 print("[upload_file] AI match success!")
                 matchering_succeeded = True
             except Exception as e:
                 print(f"[upload_file] Matchering error: {e}")
     else:
-        print(f"[DEBUG] No reference found => skipping AI match")
+        print("[DEBUG] No reference track found, skipping AI processing.")
 
     if not matchering_succeeded:
         try:
