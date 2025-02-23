@@ -36,17 +36,36 @@ def convert_audio_to_wav_pydub(input_path, output_path):
 def final_mastering_chain(input_wav, output_wav):
     try:
         audio = AudioSegment.from_wav(input_wav)
+        
+        # Debug: Print Audio Length & Format
+        print(f"[DEBUG] Processing {input_wav}, Duration: {len(audio) / 1000:.2f}s")
+        
+        # If file is empty or too short, return without filtering
+        if len(audio) < 500:  # Less than 0.5 seconds
+            print("[ERROR] Audio file too short, skipping processing.")
+            return False
+        
+        # Minimal high-pass
         audio = audio.high_pass_filter(40)
+
+        # Normalize => mild compression
         audio = effects.normalize(audio)
+
+        # +5 dB
         audio = audio.apply_gain(5)
+
+        # -12 LUFS
         target_lufs = -12.0
         gain_needed = target_lufs - audio.dBFS
         audio = audio.apply_gain(gain_needed)
+
         audio.export(output_wav, format="wav")
         return True
+
     except Exception as e:
-        print(f"[final_mastering_chain] Error: {e}")
+        print(f"[ERROR] final_mastering_chain failed: {e}")
         return False
+
 
 @app.route("/upload", methods=["POST"])
 def upload_file():
@@ -119,4 +138,4 @@ def upload_file():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=False)
