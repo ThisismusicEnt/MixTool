@@ -1,141 +1,117 @@
 import os
-import socket
-import librosa
-import numpy as np
-import soundfile as sf
-from pydub import AudioSegment, effects
+import subprocess
+import uuid
+
+from flask import Flask, request, render_template, redirect, flash, url_for, send_file, after_this_request
 import matchering as mg
-from flask import Flask, request, jsonify, send_file, render_template, after_this_request
+import logging
 
 app = Flask(__name__)
+app.secret_key = "YOUR_SECRET_KEY"
 
-UPLOAD_FOLDER = "uploads"
-PROCESSED_FOLDER = "processed"
-REFERENCE_FOLDER = "reference_tracks"
+# Create folders at runtime
+os.makedirs("uploads", exist_ok=True)
+os.makedirs("processed", exist_ok=True)
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(PROCESSED_FOLDER, exist_ok=True)
-os.makedirs(REFERENCE_FOLDER, exist_ok=True)
+def ffmpeg_to_wav(input_path, output_path):
+    """
+    Convert any audio/video to 16-bit 44.1kHz WAV stereo using FFmpeg.
+    """
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "44100",
+        "-ac", "2",
+        output_path
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+def cleanup_file(path):
+    try:
+        os.remove(path)
+        app.logger.info(f"Deleted file {path}")
+    except Exception as e:
+        app.logger.error(f"Could not delete file {path}: {e}")
 
 @app.route("/")
 def home():
     return render_template("index.html")
 
-def convert_audio_to_wav_pydub(input_path, output_path):
-    try:
-        audio = AudioSegment.from_file(input_path)
-        audio = audio.set_frame_rate(44100).set_channels(2).set_sample_width(2)
-        audio.export(output_path, format="wav")
-        return True
-    except Exception as e:
-        print(f"[convert_audio_to_wav_pydub] Error converting {input_path} -> {output_path}: {e}")
-        return False
-
-def final_mastering_chain(input_wav, output_wav):
-    try:
-        audio = AudioSegment.from_wav(input_wav)
-        
-        # Debug: Print Audio Length & Format
-        print(f"[DEBUG] Processing {input_wav}, Duration: {len(audio) / 1000:.2f}s")
-        
-        # If file is empty or too short, return without filtering
-        if len(audio) < 500:  # Less than 0.5 seconds
-            print("[ERROR] Audio file too short, skipping processing.")
-            return False
-        
-        # Minimal high-pass
-        audio = audio.high_pass_filter(40)
-
-        # Normalize => mild compression
-        audio = effects.normalize(audio)
-
-        # +5 dB
-        audio = audio.apply_gain(5)
-
-        # -12 LUFS
-        target_lufs = -12.0
-        gain_needed = target_lufs - audio.dBFS
-        audio = audio.apply_gain(gain_needed)
-
-        audio.export(output_wav, format="wav")
-        return True
-
-    except Exception as e:
-        print(f"[ERROR] final_mastering_chain failed: {e}")
-        return False
-
-
 @app.route("/upload", methods=["POST"])
-def upload_file():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
+def upload():
+    if "target_file" not in request.files or "reference_file" not in request.files:
+        flash("Please upload both target and reference files.")
+        return redirect(url_for("home"))
 
-    user_file = request.files["file"]
-    mix_type = request.form.get("mix_type", "StudioMaster")
+    target_file = request.files["target_file"]
+    reference_file = request.files["reference_file"]
+    if target_file.filename == "" or reference_file.filename == "":
+        flash("Please select valid files for both target and reference.")
+        return redirect(url_for("home"))
 
-    user_upload_path = os.path.join(UPLOAD_FOLDER, user_file.filename)
-    user_file.save(user_upload_path)
+    # Unique ID for session
+    session_id = str(uuid.uuid4())
 
-    original_stem = os.path.splitext(user_file.filename)[0]
+    target_filename = f"{session_id}_target_{target_file.filename}"
+    reference_filename = f"{session_id}_ref_{reference_file.filename}"
 
-    user_wav = os.path.join(PROCESSED_FOLDER, "user_input.wav")
-    if not convert_audio_to_wav_pydub(user_upload_path, user_wav):
-        return jsonify({"error": "Failed to convert user file to WAV"}), 500
+    target_path = os.path.join("uploads", target_filename)
+    ref_path = os.path.join("uploads", reference_filename)
 
-    possible_exts = [".mp3", ".wav", ".flac", ".m4a"]
-    ref_wav = os.path.join(PROCESSED_FOLDER, "reference.wav")
-    found_ref = False
+    target_file.save(target_path)
+    reference_file.save(ref_path)
 
-    for ext in possible_exts:
-        ref_original = os.path.join(REFERENCE_FOLDER, mix_type + ext)
-        if os.path.exists(ref_original):
-            print(f"[DEBUG] Found reference for {mix_type}: {ref_original}")
-            if convert_audio_to_wav_pydub(ref_original, ref_wav):
-                found_ref = True
-            break
+    # Convert to WAV
+    target_wav = os.path.join("processed", f"{session_id}_target.wav")
+    ref_wav = os.path.join("processed", f"{session_id}_ref.wav")
+    ffmpeg_to_wav(target_path, target_wav)
+    ffmpeg_to_wav(ref_path, ref_wav)
 
-    ai_mastered_path = os.path.join(PROCESSED_FOLDER, "ai_mastered.wav")
-    matchering_succeeded = False
+    # Master with matchering
+    master_wav = os.path.join("processed", f"{session_id}_master.wav")
+    try:
+        mg.process(
+            target=target_wav,
+            reference=ref_wav,
+            results=[mg.pcm16(master_wav)]
+        )
+    except Exception as e:
+        app.logger.error(f"Matchering error: {e}")
+        flash("Error during AI mastering. Check logs or try different files.")
+        return redirect(url_for("home"))
 
-    if found_ref:
-        try:
-            print("[DEBUG] Attempting mg.process(...)")
-            mg.process(user_wav, ref_wav, ai_mastered_path)
-            print("[upload_file] AI match success!")
-            matchering_succeeded = True
-        except Exception as e:
-            print(f"[upload_file] Matchering error: {e}")
-    else:
-        print(f"[DEBUG] No reference found => skipping AI match")
+    # Export format (wav/mp3)
+    export_format = request.form.get("export_format", "wav")
+    final_output_path = master_wav
+    if export_format == "mp3":
+        final_mp3 = os.path.join("processed", f"{session_id}_master.mp3")
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", master_wav,
+            "-codec:a", "libmp3lame", "-qscale:a", "2",
+            final_mp3
+        ]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        final_output_path = final_mp3
 
-    if not matchering_succeeded:
-        try:
-            AudioSegment.from_wav(user_wav).export(ai_mastered_path, format="wav")
-            print("[DEBUG] Fallback: Copied user_wav to ai_mastered.wav")
-        except Exception as e:
-            return jsonify({"error": f"Fallback copy error: {e}"}), 500
-
-    final_filename = f"{original_stem}_master.wav"
-    final_path = os.path.join(PROCESSED_FOLDER, final_filename)
-
-    if not final_mastering_chain(ai_mastered_path, final_path):
-        return jsonify({"error": "Final mastering chain failed"}), 500
-
+    # Schedule cleanup of all intermediate files after response
     @after_this_request
-    def cleanup(response):
-        try:
-            os.remove(user_upload_path)
-            os.remove(user_wav)
-            os.remove(ai_mastered_path)
-            os.remove(final_path)
-        except Exception as e:
-            print(f"[cleanup] Error deleting files: {e}")
+    def remove_files(response):
+        cleanup_file(target_path)
+        cleanup_file(ref_path)
+        cleanup_file(target_wav)
+        cleanup_file(ref_wav)
+        cleanup_file(master_wav)
+        if final_output_path != master_wav:
+            cleanup_file(master_wav)  # in case
         return response
 
-    return send_file(final_path, as_attachment=True)
+    # Return final output file
+    return send_file(final_output_path, as_attachment=True)
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=True)

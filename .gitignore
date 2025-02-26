@@ -1,8 +1,11 @@
 venv/
 __pycache__/
+*.pyc
+*.log
+uploads/
+processed/
 *.wav
 *.mp3
 *.flac
-uploads/
-processed/
-reference_tracks/
+*.mp4
+*.mov

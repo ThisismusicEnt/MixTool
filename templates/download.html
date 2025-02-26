@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Your Mastered Track is Ready</h2>
+
+  {% if fallback_used %}
+    <p style="color:red;">We used a fallback method (auto or different reference) because the original reference was unavailable.</p>
+  {% endif %}
+
+  <p>Click below to download your mastered file:</p>
+  <a href="{{ url_for('do_download', session_id=session_id, file_name=file_path) }}" class="btn">Download</a>
+
+  <p><a href="{{ url_for('index') }}">Upload another track?</a></p>
+{% endblock %}
