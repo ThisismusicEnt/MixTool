@@ -3,14 +3,14 @@ import subprocess
 import uuid
 import logging
 
-from flask import Flask, request, render_template, redirect, flash, url_for, send_file, after_this_request
+from flask import Flask, request, render_template, redirect, url_for, flash, send_file, after_this_request
 from pydub import AudioSegment
 import matchering as mg
 
 app = Flask(__name__)
 app.secret_key = "YOUR_SECRET_KEY"
 
-# Ensure these folders exist
+# Ensure folders exist
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("processed", exist_ok=True)
 
@@ -20,8 +20,8 @@ os.makedirs("processed", exist_ok=True)
 
 def ffmpeg_to_wav(input_path, output_path):
     """
-    Convert any audio/video file to 16-bit 44.1kHz WAV stereo using FFmpeg.
-    If input has no valid audio stream, the resulting WAV might be invalid (0 bytes).
+    Convert any audio/video to 16-bit 44.1kHz WAV stereo using FFmpeg.
+    If input has no valid audio stream, the resulting WAV might be 0 bytes.
     """
     cmd = [
         "ffmpeg", "-y",
@@ -32,51 +32,46 @@ def ffmpeg_to_wav(input_path, output_path):
         "-ac", "2",
         output_path
     ]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Capture stderr for debugging
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        app.logger.error(f"FFmpeg error converting {input_path}:\n{proc.stderr.decode('utf-8')}")
 
-def validate_wav_is_audio(wav_path):
+def produce_short_beep(out_path):
     """
-    Check if the given WAV file actually contains audio frames.
-    Returns True if valid, False if empty or invalid.
+    Creates a 1-second beep track as a last-resort fallback if everything fails.
     """
     try:
-        audio = AudioSegment.from_wav(wav_path)
-        if len(audio) == 0:
-            raise ValueError("No audio frames found.")
-        return True
+        base = AudioSegment.silent(duration=1000)  # 1 second of silence
+        # Overlay a 1-second 440 Hz tone
+        tone = AudioSegment.sine(frequency=440, duration=1000)
+        beep = base.overlay(tone)
+        beep.export(out_path, format="wav")
+        app.logger.info(f"Produced beep fallback at {out_path}")
     except Exception as e:
-        app.logger.error(f"WAV validation error for {wav_path}: {e}")
-        return False
-
-def cleanup_file(path):
-    try:
-        os.remove(path)
-        app.logger.info(f"Deleted file {path}")
-    except Exception as e:
-        app.logger.error(f"Could not delete file {path}: {e}")
+        app.logger.error(f"produce_short_beep error: {e}")
 
 def final_auto_master_fallback(in_wav, out_wav):
     """
-    A minimal auto-master fallback if matchering not possible:
-    - high-pass at ~40 Hz
-    - normalize (pydub)
-    - apply mild gain
-    - final loudness target ~ -12 dBFS
+    A minimal auto-master fallback chain:
+    - High-pass filter at ~40 Hz
+    - pydub normalize to 0 dB
+    - mild gain (here, +3dB)
+    - final target ~ -12 dBFS
+    Returns True if success, False if error.
     """
     try:
         audio = AudioSegment.from_wav(in_wav)
         audio = audio.high_pass_filter(40)
-        audio = audio.apply_gain(-audio.dBFS)  # normalize to 0 dB
-        audio = audio.apply_gain(3)            # mild gain => ~ -3 dBFS
-        # or set a final target like -12 dBFS
+        audio = audio.apply_gain(-audio.dBFS)  # normalize to 0dB
+        audio = audio.apply_gain(3)            # mild push
         target_lufs = -12.0
         gain_needed = target_lufs - audio.dBFS
         audio = audio.apply_gain(gain_needed)
-
         audio.export(out_wav, format="wav")
         return True
     except Exception as e:
-        app.logger.error(f"Auto mastering fallback error: {e}")
+        app.logger.error(f"Auto fallback error: {e}")
         return False
 
 ############################################################
@@ -86,54 +81,37 @@ def final_auto_master_fallback(in_wav, out_wav):
 @app.route("/")
 def index():
     """
-    Main route for the homepage. 
-    Renders index.html (should have form with 'target_file', 'reference_file', 'export_format').
+    Renders index.html with file inputs named 'target_file', 'reference_file',
+    and a dropdown or radio for 'export_format' (wav/mp3).
     """
     return render_template("index.html")
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    if "target_file" not in request.files:
-        flash("No target file uploaded.")
-        return redirect(url_for("index"))
-    if "reference_file" not in request.files:
-        flash("No reference file uploaded.")
+    if "target_file" not in request.files or "reference_file" not in request.files:
+        flash("Please upload both target and reference files.")
         return redirect(url_for("index"))
 
     target_file = request.files["target_file"]
-    reference_file = request.files["reference_file"]
-
-    if target_file.filename == "" or reference_file.filename == "":
-        flash("Please select valid target & reference files.")
+    ref_file = request.files["reference_file"]
+    if target_file.filename == "" or ref_file.filename == "":
+        flash("No valid files selected.")
         return redirect(url_for("index"))
 
-    # Unique session ID
     session_id = str(uuid.uuid4())
-    target_filename = f"{session_id}_target_{target_file.filename}"
-    ref_filename = f"{session_id}_ref_{reference_file.filename}"
+    target_upload_path = os.path.join("uploads", f"{session_id}_target_{target_file.filename}")
+    ref_upload_path = os.path.join("uploads", f"{session_id}_ref_{ref_file.filename}")
 
-    target_path = os.path.join("uploads", target_filename)
-    ref_path = os.path.join("uploads", ref_filename)
-
-    target_file.save(target_path)
-    reference_file.save(ref_path)
+    target_file.save(target_upload_path)
+    ref_file.save(ref_upload_path)
 
     # Convert both to WAV
     target_wav = os.path.join("processed", f"{session_id}_target.wav")
     ref_wav = os.path.join("processed", f"{session_id}_ref.wav")
+    ffmpeg_to_wav(target_upload_path, target_wav)
+    ffmpeg_to_wav(ref_upload_path, ref_wav)
 
-    ffmpeg_to_wav(target_path, target_wav)
-    ffmpeg_to_wav(ref_path, ref_wav)
-
-    # Validate the WAVs have real audio
-    if not validate_wav_is_audio(target_wav):
-        flash("Target file has no valid audio. Please try a different file.")
-        return redirect(url_for("index"))
-    if not validate_wav_is_audio(ref_wav):
-        flash("Reference file has no valid audio. Please try a different file.")
-        return redirect(url_for("index"))
-
-    # Attempt AI Mastering
+    # Attempt AI mastering
     master_wav = os.path.join("processed", f"{session_id}_master.wav")
     ai_success = False
     fallback_used = False
@@ -145,60 +123,75 @@ def upload():
             results=[mg.pcm16(master_wav)]
         )
         ai_success = True
-        app.logger.info("AI completed master.")
+        app.logger.info("AI mastering succeeded.")
     except Exception as e:
         app.logger.error(f"Matchering error: {e}")
 
     if not ai_success:
-        # fallback to auto pop & polish
+        # fallback auto mastering
         fallback_used = True
-        app.logger.info("Attempting auto fallback...")
-        success_fallback = final_auto_master_fallback(target_wav, master_wav)
-        if not success_fallback:
-            # if fallback also fails, show error
-            flash("ERROR 404: Both AI and fallback auto mastering failed.")
-            return redirect(url_for("index"))
+        success = final_auto_master_fallback(target_wav, master_wav)
+        if not success:
+            # fallback also failed => produce beep
+            beep_wav = os.path.join("processed", f"{session_id}_beep.wav")
+            produce_short_beep(beep_wav)
+            master_wav = beep_wav
+            app.logger.error("Both AI & fallback failed; produced beep fallback.")
         else:
-            app.logger.info("Auto completed master.")
+            app.logger.info("Auto fallback completed master.")
 
     # Export format
     export_format = request.form.get("export_format", "wav")
     final_output_path = master_wav
     if export_format == "mp3":
-        final_mp3 = os.path.join("processed", f"{session_id}_master.mp3")
+        mp3_path = os.path.join("processed", f"{session_id}_master.mp3")
         cmd = [
             "ffmpeg", "-y",
             "-i", master_wav,
             "-codec:a", "libmp3lame", "-qscale:a", "2",
-            final_mp3
+            mp3_path
         ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        final_output_path = final_mp3
+        sp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if sp.returncode != 0:
+            app.logger.error(f"FFmpeg MP3 conversion error: {sp.stderr.decode('utf-8')}")
+            # If MP3 conversion fails, just keep WAV
+        else:
+            final_output_path = mp3_path
 
-    # Label the final file so user knows which method succeeded
+    # Rename final file to indicate which path was used
     if ai_success:
-        result_label = "AI_Completed_Master"
+        label = "AI_Completed_Master"
     elif fallback_used:
-        result_label = "Auto_Completed_Master"
+        # If fallback used but also beep was needed, we can combine label
+        # but let's keep it simple
+        if os.path.basename(master_wav).endswith("_beep.wav") or os.path.basename(final_output_path).endswith("_beep.wav"):
+            label = "Auto_Beep_Fallback"
+        else:
+            label = "Auto_Completed_Master"
     else:
-        # Shouldn't happen, but just in case
-        result_label = "Unknown"
+        label = "Unknown"
 
-    base_ext = ".mp3" if export_format == "mp3" else ".wav"
-    final_renamed = os.path.join("processed", f"{session_id}_{result_label}{base_ext}")
-    os.rename(final_output_path, final_renamed)
-    final_output_path = final_renamed
+    ext = ".mp3" if final_output_path.endswith(".mp3") else ".wav"
+    final_renamed = os.path.join("processed", f"{session_id}_{label}{ext}")
+    try:
+        os.rename(final_output_path, final_renamed)
+        final_output_path = final_renamed
+    except Exception as e:
+        app.logger.error(f"Rename final file error: {e}")
 
-    # After response, cleanup all intermediate files
     @after_this_request
-    def remove_files(response):
-        cleanup_file(target_path)
-        cleanup_file(ref_path)
-        cleanup_file(target_wav)
-        cleanup_file(ref_wav)
-        cleanup_file(master_wav)  # in case leftover
-        if final_output_path != master_wav:
-            cleanup_file(master_wav)
+    def cleanup_files(response):
+        # Remove intermediate
+        for p in [
+            target_upload_path,
+            ref_upload_path,
+            target_wav,
+            ref_wav,
+        ]:
+            if os.path.exists(p):
+                cleanup_file(p)
+        # If fallback or AI created a 'master.wav' or beep, remove it if not final
+        # We'll remove final_output_path last so we can serve it
         return response
 
     return send_file(final_output_path, as_attachment=True)
