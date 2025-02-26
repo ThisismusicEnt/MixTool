@@ -36,20 +36,23 @@ def cleanup_file(path):
         app.logger.error(f"Could not delete file {path}: {e}")
 
 @app.route("/")
-def home():
+def index():
+    """
+    Main route for the homepage. Renders index.html.
+    """
     return render_template("index.html")
 
 @app.route("/upload", methods=["POST"])
 def upload():
     if "target_file" not in request.files or "reference_file" not in request.files:
         flash("Please upload both target and reference files.")
-        return redirect(url_for("home"))
+        return redirect(url_for("index"))
 
     target_file = request.files["target_file"]
     reference_file = request.files["reference_file"]
     if target_file.filename == "" or reference_file.filename == "":
         flash("Please select valid files for both target and reference.")
-        return redirect(url_for("home"))
+        return redirect(url_for("index"))
 
     # Unique ID for session
     session_id = str(uuid.uuid4())
@@ -63,7 +66,7 @@ def upload():
     target_file.save(target_path)
     reference_file.save(ref_path)
 
-    # Convert to WAV
+    # Convert both to WAV
     target_wav = os.path.join("processed", f"{session_id}_target.wav")
     ref_wav = os.path.join("processed", f"{session_id}_ref.wav")
     ffmpeg_to_wav(target_path, target_wav)
@@ -80,7 +83,7 @@ def upload():
     except Exception as e:
         app.logger.error(f"Matchering error: {e}")
         flash("Error during AI mastering. Check logs or try different files.")
-        return redirect(url_for("home"))
+        return redirect(url_for("index"))
 
     # Export format (wav/mp3)
     export_format = request.form.get("export_format", "wav")
@@ -105,7 +108,7 @@ def upload():
         cleanup_file(ref_wav)
         cleanup_file(master_wav)
         if final_output_path != master_wav:
-            cleanup_file(master_wav)  # in case
+            cleanup_file(master_wav)  # just in case
         return response
 
     # Return final output file
