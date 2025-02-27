@@ -2,8 +2,7 @@ import os
 import subprocess
 import uuid
 import logging
-from tempfile import mkdtemp
-import shutil
+from pathlib import Path
 
 from flask import Flask, request, render_template, redirect, url_for, send_file, flash, after_this_request
 from pydub import AudioSegment
@@ -13,12 +12,14 @@ import matchering as mg
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "YOUR_SECRET_KEY")
 
-# Use temp directories that will work with Heroku's ephemeral filesystem
-temp_base = mkdtemp()
-UPLOAD_FOLDER = os.path.join(temp_base, "uploads")
-PROCESSED_FOLDER = os.path.join(temp_base, "processed")
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(PROCESSED_FOLDER, exist_ok=True)
+# Use directories that will work with Heroku's ephemeral filesystem
+# Create these directories at app startup
+UPLOAD_FOLDER = os.path.join("/tmp", "uploads")
+PROCESSED_FOLDER = os.path.join("/tmp", "processed")
+
+# Ensure directories exist
+Path(UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
+Path(PROCESSED_FOLDER).mkdir(parents=True, exist_ok=True)
 
 ############################################################
 # UTILITY FUNCTIONS
@@ -98,10 +99,17 @@ def index():
     Render a form that asks for 'target_file', 'reference_file', 
     and possibly 'export_format' (wav/mp3).
     """
+    # Recreate directories just to be sure they exist
+    Path(UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
+    Path(PROCESSED_FOLDER).mkdir(parents=True, exist_ok=True)
     return render_template("index.html")
 
 @app.route("/upload", methods=["POST"])
 def upload():
+    # Ensure directories exist
+    Path(UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
+    Path(PROCESSED_FOLDER).mkdir(parents=True, exist_ok=True)
+    
     # 1) Validate fields
     if "target_file" not in request.files or "reference_file" not in request.files:
         flash("Please upload both target and reference.")
@@ -114,9 +122,17 @@ def upload():
 
     # 2) Save them
     session_id = str(uuid.uuid4())
-    target_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_target_{target_file.filename}")
-    ref_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_ref_{ref_file.filename}")
+    
+    # Use safe filenames
+    target_filename = "".join(c for c in target_file.filename if c.isalnum() or c in '._-')
+    ref_filename = "".join(c for c in ref_file.filename if c.isalnum() or c in '._-')
+    
+    target_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_target_{target_filename}")
+    ref_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_ref_{ref_filename}")
 
+    app.logger.info(f"Saving target to: {target_path}")
+    app.logger.info(f"Saving reference to: {ref_path}")
+    
     target_file.save(target_path)
     ref_file.save(ref_path)
 
@@ -197,20 +213,12 @@ def upload():
         for p in [target_path, ref_path, target_wav, ref_wav]:
             if os.path.exists(p):
                 cleanup_file(p)
-        # We do NOT remove final_output_path here so user can download it
+        # We'll now schedule the output file for deletion after some time
+        # But we do NOT remove final_output_path here so user can download it
         return response
 
     # 10) Return final file
     return send_file(final_output_path, as_attachment=True)
-
-@app.teardown_appcontext
-def cleanup_temp_folder(error):
-    """Clean up temporary directory when application context ends"""
-    try:
-        shutil.rmtree(temp_base)
-        app.logger.info(f"Cleaned up temp directory: {temp_base}")
-    except Exception as e:
-        app.logger.error(f"Error cleaning temp directory: {e}")
 
 if __name__ == "__main__":
     # Configure logging
