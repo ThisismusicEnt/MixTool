@@ -2,6 +2,8 @@ import os
 import subprocess
 import uuid
 import logging
+from tempfile import mkdtemp
+import shutil
 
 from flask import Flask, request, render_template, redirect, url_for, send_file, flash, after_this_request
 from pydub import AudioSegment
@@ -9,11 +11,14 @@ from pydub.generators import Sine
 import matchering as mg
 
 app = Flask(__name__)
-app.secret_key = "YOUR_SECRET_KEY"
+app.secret_key = os.environ.get("SECRET_KEY", "YOUR_SECRET_KEY")
 
-# Make sure these directories exist
-os.makedirs("uploads", exist_ok=True)
-os.makedirs("processed", exist_ok=True)
+# Use temp directories that will work with Heroku's ephemeral filesystem
+temp_base = mkdtemp()
+UPLOAD_FOLDER = os.path.join(temp_base, "uploads")
+PROCESSED_FOLDER = os.path.join(temp_base, "processed")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 
 ############################################################
 # UTILITY FUNCTIONS
@@ -21,8 +26,9 @@ os.makedirs("processed", exist_ok=True)
 
 def cleanup_file(path):
     try:
-        os.remove(path)
-        app.logger.info(f"Deleted file {path}")
+        if os.path.exists(path):
+            os.remove(path)
+            app.logger.info(f"Deleted file {path}")
     except Exception as e:
         app.logger.error(f"Could not delete file {path}: {e}")
 
@@ -108,20 +114,20 @@ def upload():
 
     # 2) Save them
     session_id = str(uuid.uuid4())
-    target_path = os.path.join("uploads", f"{session_id}_target_{target_file.filename}")
-    ref_path = os.path.join("uploads", f"{session_id}_ref_{ref_file.filename}")
+    target_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_target_{target_file.filename}")
+    ref_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_ref_{ref_file.filename}")
 
     target_file.save(target_path)
     ref_file.save(ref_path)
 
     # 3) Convert to WAV
-    target_wav = os.path.join("processed", f"{session_id}_target.wav")
-    ref_wav = os.path.join("processed", f"{session_id}_ref.wav")
+    target_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_target.wav")
+    ref_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_ref.wav")
     ffmpeg_to_wav(target_path, target_wav)
     ffmpeg_to_wav(ref_path, ref_wav)
 
     # 4) Attempt AI Master
-    master_wav = os.path.join("processed", f"{session_id}_master.wav")
+    master_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_master.wav")
     ai_success = False
     fallback_used = False
     try:
@@ -141,7 +147,7 @@ def upload():
         success = final_auto_master_fallback(target_wav, master_wav)
         if not success:
             # 6) If fallback also fails => produce beep
-            beep_wav = os.path.join("processed", f"{session_id}_beep.wav")
+            beep_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_beep.wav")
             produce_short_beep(beep_wav)
             master_wav = beep_wav
             app.logger.error("Both AI & fallback failed; beep fallback.")
@@ -152,7 +158,7 @@ def upload():
     export_format = request.form.get("export_format", "wav")
     final_output_path = master_wav
     if export_format == "mp3":
-        mp3_path = os.path.join("processed", f"{session_id}_master.mp3")
+        mp3_path = os.path.join(PROCESSED_FOLDER, f"{session_id}_master.mp3")
         sp = subprocess.run([
             "ffmpeg", "-y",
             "-i", master_wav,
@@ -178,7 +184,7 @@ def upload():
         label = "Unknown"
 
     ext = ".mp3" if final_output_path.endswith(".mp3") else ".wav"
-    final_renamed = os.path.join("processed", f"{session_id}_{label}{ext}")
+    final_renamed = os.path.join(PROCESSED_FOLDER, f"{session_id}_{label}{ext}")
     try:
         os.rename(final_output_path, final_renamed)
         final_output_path = final_renamed
@@ -197,7 +203,27 @@ def upload():
     # 10) Return final file
     return send_file(final_output_path, as_attachment=True)
 
+@app.teardown_appcontext
+def cleanup_temp_folder(error):
+    """Clean up temporary directory when application context ends"""
+    try:
+        shutil.rmtree(temp_base)
+        app.logger.info(f"Cleaned up temp directory: {temp_base}")
+    except Exception as e:
+        app.logger.error(f"Error cleaning temp directory: {e}")
+
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    # Configure logging
+    log_level = os.environ.get("LOG_LEVEL", "INFO")
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format='%(asctime)s [%(levelname)s] %(message)s',
+    )
+    
+    # Get port from environment variable (Heroku sets this)
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    
+    # In production, don't use debug mode
+    debug = os.environ.get("FLASK_ENV") == "development"
+    
+    app.run(host="0.0.0.0", port=port, debug=debug)
