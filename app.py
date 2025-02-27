@@ -5,34 +5,96 @@ import logging
 import time
 import wave
 import shutil
+import json
 from pathlib import Path
+import threading
 
-from flask import Flask, request, render_template, redirect, url_for, send_file, flash, after_this_request
+from flask import Flask, request, render_template, redirect, url_for, send_file, flash, jsonify, session
 from pydub import AudioSegment
 from pydub.generators import Sine
 import matchering as mg
+import redis
 
+# Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "YOUR_SECRET_KEY")
 
+# Configure Redis for job queue
+redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379')
+redis_client = redis.from_url(redis_url)
+
 # Use directories that will work with Heroku's ephemeral filesystem
-# Create these directories at app startup
 UPLOAD_FOLDER = os.path.join("/tmp", "uploads")
 PROCESSED_FOLDER = os.path.join("/tmp", "processed")
 LOG_FOLDER = os.path.join("/tmp", "logs")
 
 # Ensure directories exist
-Path(UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
-Path(PROCESSED_FOLDER).mkdir(parents=True, exist_ok=True)
-Path(LOG_FOLDER).mkdir(parents=True, exist_ok=True)
+for directory in [UPLOAD_FOLDER, PROCESSED_FOLDER, LOG_FOLDER]:
+    Path(directory).mkdir(parents=True, exist_ok=True)
 
-# Configure more detailed logging
+# Configure logging
 file_handler = logging.FileHandler(os.path.join(LOG_FOLDER, 'app.log'))
 file_handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(formatter)
 app.logger.addHandler(file_handler)
 app.logger.setLevel(logging.DEBUG)
+
+############################################################
+# JOB QUEUE MANAGEMENT
+############################################################
+
+class JobStatus:
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+def store_job_data(job_id, data):
+    """Store job data in Redis"""
+    redis_client.set(f"job:{job_id}", json.dumps(data))
+    redis_client.expire(f"job:{job_id}", 3600)  # Expire after 1 hour
+
+def get_job_data(job_id):
+    """Get job data from Redis"""
+    data = redis_client.get(f"job:{job_id}")
+    if data:
+        return json.loads(data)
+    return None
+
+def queue_job(job_id, target_path, ref_path, export_format):
+    """Add a job to the processing queue"""
+    job_data = {
+        "id": job_id,
+        "target_path": target_path,
+        "ref_path": ref_path,
+        "export_format": export_format,
+        "status": JobStatus.PENDING,
+        "created_at": time.time(),
+        "result_path": None,
+        "error": None
+    }
+    store_job_data(job_id, job_data)
+    
+    # Add to processing queue
+    redis_client.lpush("audio_processing_queue", job_id)
+    app.logger.info(f"Job {job_id} queued for processing")
+    return job_id
+
+def update_job_status(job_id, status, result_path=None, error=None):
+    """Update job status in Redis"""
+    job_data = get_job_data(job_id)
+    if job_data:
+        job_data["status"] = status
+        if result_path:
+            job_data["result_path"] = result_path
+        if error:
+            job_data["error"] = error
+        job_data["updated_at"] = time.time()
+        store_job_data(job_id, job_data)
+        app.logger.info(f"Job {job_id} status updated to {status}")
+        return True
+    return False
 
 ############################################################
 # UTILITY FUNCTIONS
@@ -146,18 +208,11 @@ def repair_wav_file(input_wav, output_wav):
         return False
 
 def produce_short_beep(out_path):
-    """
-    Creates a 1-second beep track as final fallback
-    using pydub.generators.Sine for 440 Hz tone.
-    """
+    """Creates a 1-second beep track as final fallback"""
     try:
         # Create a 1-second 440Hz sine wave
         beep = Sine(440).to_audio_segment(duration=1000)
-        
-        # Add fade in/out to avoid clicks
         beep = beep.fade_in(50).fade_out(50)
-        
-        # Export to WAV
         beep.export(out_path, format="wav")
         app.logger.info(f"Produced beep fallback at {out_path}")
         return True
@@ -166,23 +221,13 @@ def produce_short_beep(out_path):
         return False
 
 def simple_audio_processing(in_wav, out_wav):
-    """
-    Very basic audio processing:
-    - Convert to mono if needed
-    - Normalize to -3 dB
-    Returns True if success, False if error
-    """
+    """Very basic audio processing for fallback"""
     try:
         audio = AudioSegment.from_wav(in_wav)
-        
-        # Convert to mono if stereo
         if audio.channels > 1:
             audio = audio.set_channels(1)
-            
-        # Normalize
         normalized = audio.normalize()
         normalized.export(out_wav, format="wav")
-        
         app.logger.info(f"Simple audio processing completed: {out_wav}")
         return True
     except Exception as e:
@@ -190,14 +235,8 @@ def simple_audio_processing(in_wav, out_wav):
         return False
 
 def basic_auto_master(in_wav, out_wav):
-    """
-    Basic audio mastering:
-    - Normalize level
-    - Basic compression
-    Returns True if success, False if error
-    """
+    """Basic audio mastering for fallback"""
     try:
-        # Use FFmpeg for basic mastering (normalize + compress)
         cmd = [
             "ffmpeg", "-y",
             "-i", in_wav,
@@ -219,34 +258,21 @@ def basic_auto_master(in_wav, out_wav):
         return False
 
 def final_auto_master_fallback(in_wav, out_wav):
-    """
-    Enhanced auto master:
-    - High-pass 40Hz
-    - normalize to 0 dB
-    - +3 dB mild boost
-    - final target ~ -12 dBFS
-    Returns True if success, False if error
-    """
+    """Enhanced auto master fallback"""
     try:
         audio = AudioSegment.from_wav(in_wav)
-        
-        # Apply processing
         audio = audio.high_pass_filter(40)
-        audio = audio.normalize()  # normalize to 0 dB
-        audio = audio.apply_gain(3)  # mild push => ~ -3 dBFS
+        audio = audio.normalize()
+        audio = audio.apply_gain(3)
         
-        # Final target = ~ -12 dBFS
         target_lufs = -12.0
         current_dBFS = audio.dBFS
         app.logger.info(f"Current dBFS: {current_dBFS}, Target LUFS: {target_lufs}")
         
         gain_needed = target_lufs - current_dBFS
         audio = audio.apply_gain(gain_needed)
-        
-        # Export
         audio.export(out_wav, format="wav")
         
-        # Validate
         if validate_wav_file(out_wav):
             app.logger.info(f"Auto fallback master completed: {out_wav}")
             return True
@@ -265,31 +291,253 @@ def copy_input_as_fallback(in_wav, out_wav):
         app.logger.error(f"Copy fallback error: {e}")
         return False
 
+def convert_to_mp3(wav_path, mp3_path):
+    """Convert WAV to MP3 using FFmpeg"""
+    try:
+        # Use FFmpeg with higher quality settings
+        sp = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", wav_path,
+            "-codec:a", "libmp3lame", 
+            "-qscale:a", "0",  # Best quality
+            "-b:a", "320k",    # 320kbps bitrate
+            mp3_path
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        
+        if sp.returncode == 0 and os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+            app.logger.info(f"MP3 conversion successful: {mp3_path}")
+            return True
+        else:
+            app.logger.error(f"MP3 conversion error: {sp.stderr.decode('utf-8')}")
+            return False
+    except Exception as e:
+        app.logger.error(f"MP3 conversion exception: {e}")
+        return False
+
+############################################################
+# AUDIO PROCESSING WORKER
+############################################################
+
+def process_audio(job_id, target_path, ref_path, export_format):
+    """Process audio files and update job status"""
+    app.logger.info(f"Starting processing for job {job_id}")
+    update_job_status(job_id, JobStatus.PROCESSING)
+    
+    try:
+        # 1. Convert inputs to WAV
+        target_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_target.wav")
+        ref_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_ref.wav")
+        
+        target_conversion_ok = ffmpeg_to_wav(target_path, target_wav)
+        ref_conversion_ok = ffmpeg_to_wav(ref_path, ref_wav)
+        
+        # If conversion failed, try to repair
+        if not target_conversion_ok:
+            app.logger.warning(f"Target conversion failed, attempting repair")
+            target_repair_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_target_repair.wav")
+            target_conversion_ok = simple_audio_processing(target_path, target_repair_wav)
+            if target_conversion_ok:
+                target_wav = target_repair_wav
+        
+        if not ref_conversion_ok:
+            app.logger.warning(f"Reference conversion failed, attempting repair")
+            ref_repair_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_ref_repair.wav")
+            ref_conversion_ok = simple_audio_processing(ref_path, ref_repair_wav)
+            if ref_conversion_ok:
+                ref_wav = ref_repair_wav
+        
+        # 2. Attempt AI mastering
+        master_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_master.wav")
+        ai_success = False
+        fallback_method_used = "None"
+        
+        if target_conversion_ok and ref_conversion_ok:
+            try:
+                app.logger.info("Starting Matchering AI mastering process")
+                # Configure Matchering with increased resilience
+                mg.configure(
+                    implementation=mg.HandlerbarsImpl(),
+                    result_bitrate=320,
+                    preview_size=30,
+                    threshold=-40,
+                    tolerance=0.1
+                )
+                
+                # Process with Matchering
+                mg.process(
+                    target=target_wav,
+                    reference=ref_wav,
+                    results=[mg.pcm16(master_wav)]
+                )
+                
+                # Validate the result
+                if os.path.exists(master_wav) and validate_wav_file(master_wav):
+                    ai_success = True
+                    fallback_method_used = "None"
+                    app.logger.info("AI master success!")
+                else:
+                    app.logger.error("AI master produced invalid WAV file")
+            except Exception as e:
+                app.logger.error(f"Matchering error: {e}")
+        else:
+            app.logger.warning("Skipping AI mastering due to conversion failures")
+        
+        # 3. Try fallbacks if AI fails
+        if not ai_success:
+            app.logger.info("AI mastering failed, trying fallback chain")
+            
+            # Try enhanced auto-master fallback
+            enhanced_fallback_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_enhanced_fallback.wav")
+            if target_conversion_ok and final_auto_master_fallback(target_wav, enhanced_fallback_wav):
+                master_wav = enhanced_fallback_wav
+                fallback_method_used = "Enhanced"
+                app.logger.info("Enhanced auto fallback completed master.")
+            
+            # Try basic auto master
+            elif target_conversion_ok:
+                basic_fallback_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_basic_fallback.wav")
+                if basic_auto_master(target_wav, basic_fallback_wav):
+                    master_wav = basic_fallback_wav
+                    fallback_method_used = "Basic"
+                    app.logger.info("Basic auto fallback completed master.")
+                
+                # Try copy as fallback
+                else:
+                    copy_fallback_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_copy_fallback.wav")
+                    if copy_input_as_fallback(target_wav, copy_fallback_wav):
+                        master_wav = copy_fallback_wav
+                        fallback_method_used = "Copy"
+                        app.logger.info("Copy fallback used.")
+                    
+                    # Ultimate fallback: beep
+                    else:
+                        beep_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_beep.wav")
+                        produce_short_beep(beep_wav)
+                        master_wav = beep_wav
+                        fallback_method_used = "Beep"
+                        app.logger.error("All fallbacks failed; beep fallback used.")
+            
+            # If target conversion failed, use beep
+            else:
+                beep_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_beep.wav")
+                produce_short_beep(beep_wav)
+                master_wav = beep_wav
+                fallback_method_used = "Beep"
+                app.logger.error("Target conversion and all fallbacks failed; beep fallback.")
+        
+        # 4. Convert to MP3 if requested
+        final_output_path = master_wav
+        
+        if export_format == "mp3":
+            mp3_path = os.path.join(PROCESSED_FOLDER, f"{job_id}_master.mp3")
+            if convert_to_mp3(master_wav, mp3_path):
+                final_output_path = mp3_path
+        
+        # 5. Rename final output with appropriate label
+        if ai_success:
+            label = "AI_Completed_Master"
+        elif fallback_method_used == "Enhanced":
+            label = "Enhanced_Auto_Master"
+        elif fallback_method_used == "Basic":
+            label = "Basic_Auto_Master"
+        elif fallback_method_used == "Copy":
+            label = "Original_Copy"
+        elif fallback_method_used == "Beep":
+            label = "BEEP_All_Methods_Failed"
+        else:
+            label = "Unknown_Method"
+        
+        ext = ".mp3" if final_output_path.endswith(".mp3") else ".wav"
+        final_renamed = os.path.join(PROCESSED_FOLDER, f"{job_id}_{label}{ext}")
+        
+        try:
+            os.rename(final_output_path, final_renamed)
+            final_output_path = final_renamed
+            app.logger.info(f"Final output renamed to: {final_renamed}")
+        except Exception as e:
+            app.logger.error(f"Rename final file error: {e}")
+        
+        # 6. Update job status to completed
+        update_job_status(job_id, JobStatus.COMPLETED, final_output_path)
+        
+        # 7. Clean up temporary files
+        for folder in [UPLOAD_FOLDER, PROCESSED_FOLDER]:
+            for filename in os.listdir(folder):
+                filepath = os.path.join(folder, filename)
+                if filepath != final_output_path and job_id in filename:
+                    cleanup_file(filepath)
+        
+    except Exception as e:
+        app.logger.error(f"Error processing job {job_id}: {str(e)}")
+        update_job_status(job_id, JobStatus.FAILED, error=str(e))
+
+def worker_thread_function():
+    """Background worker thread to process audio jobs"""
+    app.logger.info("Starting background worker thread")
+    while True:
+        try:
+            # Get the next job from the queue with a timeout
+            result = redis_client.brpop("audio_processing_queue", timeout=10)
+            if result is None:
+                # No jobs available, sleep for a bit
+                time.sleep(1)
+                continue
+                
+            # Extract job ID from result
+            _, job_id_bytes = result
+            job_id = job_id_bytes.decode('utf-8')
+            
+            # Get job data
+            job_data = get_job_data(job_id)
+            if job_data is None:
+                app.logger.error(f"No data found for job {job_id}")
+                continue
+                
+            # Process the job
+            app.logger.info(f"Processing job {job_id}")
+            process_audio(
+                job_id,
+                job_data["target_path"],
+                job_data["ref_path"],
+                job_data["export_format"]
+            )
+            
+        except Exception as e:
+            app.logger.error(f"Worker thread error: {str(e)}")
+            time.sleep(5)  # Sleep before retrying
+
+# Start the worker thread when the app starts
+@app.before_first_request
+def start_worker_thread():
+    thread = threading.Thread(target=worker_thread_function)
+    thread.daemon = True  # Allow the thread to exit when the main process exits
+    thread.start()
+    app.logger.info("Worker thread started")
+
 ############################################################
 # ROUTES
 ############################################################
 
 @app.route("/")
 def index():
-    """
-    Render a form that asks for 'target_file', 'reference_file', 
-    and possibly 'export_format' (wav/mp3).
-    """
+    """Render the upload form"""
     # Recreate directories just to be sure they exist
-    Path(UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
-    Path(PROCESSED_FOLDER).mkdir(parents=True, exist_ok=True)
+    for directory in [UPLOAD_FOLDER, PROCESSED_FOLDER]:
+        Path(directory).mkdir(parents=True, exist_ok=True)
     return render_template("index.html")
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    session_id = str(uuid.uuid4())
-    app.logger.info(f"Starting new upload process, session ID: {session_id}")
+    """Handle file uploads and start processing"""
+    # Generate a unique job ID
+    job_id = str(uuid.uuid4())
+    app.logger.info(f"Starting new upload process, session ID: {job_id}")
     
     # Ensure directories exist
-    Path(UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
-    Path(PROCESSED_FOLDER).mkdir(parents=True, exist_ok=True)
+    for directory in [UPLOAD_FOLDER, PROCESSED_FOLDER]:
+        Path(directory).mkdir(parents=True, exist_ok=True)
     
-    # 1) Validate fields
+    # 1. Validate fields
     if "target_file" not in request.files or "reference_file" not in request.files:
         flash("Please upload both target and reference files.")
         return redirect(url_for("index"))
@@ -301,16 +549,13 @@ def upload():
         flash("No valid files selected.")
         return redirect(url_for("index"))
     
-    # Log file info
-    app.logger.info(f"Target file: {target_file.filename}, Reference file: {ref_file.filename}")
-    
-    # 2) Save them with safe filenames
+    # 2. Save uploaded files
     target_filename = "".join(c for c in target_file.filename if c.isalnum() or c in '._-')
     ref_filename = "".join(c for c in ref_file.filename if c.isalnum() or c in '._-')
     
-    target_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_target_{target_filename}")
-    ref_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_ref_{ref_filename}")
-
+    target_path = os.path.join(UPLOAD_FOLDER, f"{job_id}_target_{target_filename}")
+    ref_path = os.path.join(UPLOAD_FOLDER, f"{job_id}_ref_{ref_filename}")
+    
     app.logger.info(f"Saving target to: {target_path}")
     app.logger.info(f"Saving reference to: {ref_path}")
     
@@ -326,175 +571,54 @@ def upload():
         flash("Error saving reference file. Please try again.")
         return redirect(url_for("index"))
     
-    # 3) Convert to WAV
-    target_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_target.wav")
-    ref_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_ref.wav")
-    
-    # Track conversion success
-    target_conversion_ok = ffmpeg_to_wav(target_path, target_wav)
-    ref_conversion_ok = ffmpeg_to_wav(ref_path, ref_wav)
-    
-    # If conversion failed, try to repair or use fallbacks
-    if not target_conversion_ok:
-        app.logger.warning(f"Target conversion failed, attempting repair")
-        target_repair_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_target_repair.wav")
-        target_conversion_ok = simple_audio_processing(target_path, target_repair_wav)
-        if target_conversion_ok:
-            target_wav = target_repair_wav
-    
-    if not ref_conversion_ok:
-        app.logger.warning(f"Reference conversion failed, attempting repair")
-        ref_repair_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_ref_repair.wav")
-        ref_conversion_ok = simple_audio_processing(ref_path, ref_repair_wav)
-        if ref_conversion_ok:
-            ref_wav = ref_repair_wav
-    
-    # 4) Attempt AI Master if both conversions succeeded
-    master_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_master.wav")
-    ai_success = False
-    fallback_method_used = "None"  # Track which fallback was used
-    
-    # Only attempt AI mastering if both files converted successfully
-    if target_conversion_ok and ref_conversion_ok:
-        try:
-            app.logger.info("Starting Matchering AI mastering process")
-            # Configure Matchering with increased timeout
-            mg.configure(
-                implementation=mg.HandlerbarsImpl(),
-                result_bitrate=320,
-                preview_size=30,
-                # These two are important - increase tolerance and lower threshold
-                threshold=-40,
-                tolerance=0.1
-            )
-            
-            # Process with Matchering
-            mg.process(
-                target=target_wav,
-                reference=ref_wav,
-                results=[mg.pcm16(master_wav)]
-            )
-            
-            # Validate the result
-            if os.path.exists(master_wav) and validate_wav_file(master_wav):
-                ai_success = True
-                fallback_method_used = "None"
-                app.logger.info("AI master success!")
-            else:
-                app.logger.error("AI master produced invalid WAV file")
-        except Exception as e:
-            app.logger.error(f"Matchering error: {e}")
-    else:
-        app.logger.warning("Skipping AI mastering due to conversion failures")
-    
-    # 5) Fallback chain if AI fails
-    if not ai_success:
-        app.logger.info("AI mastering failed, trying fallback chain")
-        
-        # Try the original enhanced auto-master fallback
-        enhanced_fallback_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_enhanced_fallback.wav")
-        if target_conversion_ok and final_auto_master_fallback(target_wav, enhanced_fallback_wav):
-            master_wav = enhanced_fallback_wav
-            fallback_method_used = "Enhanced"
-            app.logger.info("Enhanced auto fallback completed master.")
-        
-        # If that failed, try the basic auto master
-        elif target_conversion_ok:
-            basic_fallback_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_basic_fallback.wav")
-            if basic_auto_master(target_wav, basic_fallback_wav):
-                master_wav = basic_fallback_wav
-                fallback_method_used = "Basic"
-                app.logger.info("Basic auto fallback completed master.")
-            
-            # If that failed, just copy the input as a last resort before beep
-            else:
-                copy_fallback_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_copy_fallback.wav")
-                if copy_input_as_fallback(target_wav, copy_fallback_wav):
-                    master_wav = copy_fallback_wav
-                    fallback_method_used = "Copy"
-                    app.logger.info("Copy fallback used.")
-                
-                # Ultimate fallback: beep
-                else:
-                    beep_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_beep.wav")
-                    produce_short_beep(beep_wav)
-                    master_wav = beep_wav
-                    fallback_method_used = "Beep"
-                    app.logger.error("All fallbacks failed; beep fallback used.")
-        
-        # If target conversion also failed, go directly to beep
-        else:
-            beep_wav = os.path.join(PROCESSED_FOLDER, f"{session_id}_beep.wav")
-            produce_short_beep(beep_wav)
-            master_wav = beep_wav
-            fallback_method_used = "Beep"
-            app.logger.error("Target conversion and all fallbacks failed; beep fallback.")
-
-    # 7) Convert to MP3 if requested
+    # 3. Add to processing queue
     export_format = request.form.get("export_format", "wav")
-    final_output_path = master_wav
+    queue_job(job_id, target_path, ref_path, export_format)
     
-    if export_format == "mp3":
-        mp3_path = os.path.join(PROCESSED_FOLDER, f"{session_id}_master.mp3")
-        try:
-            # Use FFmpeg with higher quality settings
-            sp = subprocess.run([
-                "ffmpeg", "-y",
-                "-i", master_wav,
-                "-codec:a", "libmp3lame", 
-                "-qscale:a", "0",  # Best quality
-                "-b:a", "320k",    # 320kbps bitrate
-                mp3_path
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-            
-            if sp.returncode == 0 and os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
-                final_output_path = mp3_path
-                app.logger.info(f"MP3 conversion successful: {mp3_path}")
-            else:
-                app.logger.error(f"MP3 conversion error: {sp.stderr.decode('utf-8')}")
-                # keep WAV
-        except Exception as e:
-            app.logger.error(f"MP3 conversion exception: {e}")
-            # keep WAV
+    # 4. Return job ID to client
+    return redirect(url_for("status", job_id=job_id))
 
-    # 8) Rename final output with appropriate label
-    if ai_success:
-        label = "AI_Completed_Master"
-    elif fallback_method_used == "Enhanced":
-        label = "Enhanced_Auto_Master"
-    elif fallback_method_used == "Basic":
-        label = "Basic_Auto_Master"
-    elif fallback_method_used == "Copy":
-        label = "Original_Copy"
-    elif fallback_method_used == "Beep":
-        label = "BEEP_All_Methods_Failed"
-    else:
-        label = "Unknown_Method"
-
-    ext = ".mp3" if final_output_path.endswith(".mp3") else ".wav"
-    final_renamed = os.path.join(PROCESSED_FOLDER, f"{session_id}_{label}{ext}")
+@app.route("/status/<job_id>")
+def status(job_id):
+    """Show job status and download link when ready"""
+    job_data = get_job_data(job_id)
+    if job_data is None:
+        flash("Job not found. It may have expired.")
+        return redirect(url_for("index"))
     
-    try:
-        os.rename(final_output_path, final_renamed)
-        final_output_path = final_renamed
-        app.logger.info(f"Final output renamed to: {final_renamed}")
-    except Exception as e:
-        app.logger.error(f"Rename final file error: {e}")
+    return render_template("status.html", job=job_data)
 
-    # 9) Cleanup after response
-    @after_this_request
-    def cleanup_files(response):
-        # Clean up all files except the final output
-        for folder in [UPLOAD_FOLDER, PROCESSED_FOLDER]:
-            for filename in os.listdir(folder):
-                filepath = os.path.join(folder, filename)
-                if filepath != final_output_path and session_id in filename:
-                    cleanup_file(filepath)
-        return response
+@app.route("/api/status/<job_id>")
+def api_status(job_id):
+    """API endpoint for checking job status via AJAX"""
+    job_data = get_job_data(job_id)
+    if job_data is None:
+        return jsonify({"error": "Job not found"}), 404
+    
+    return jsonify({
+        "id": job_data["id"],
+        "status": job_data["status"],
+        "error": job_data.get("error")
+    })
 
-    # 10) Return final file
-    app.logger.info(f"Returning file to user: {final_output_path}")
-    return send_file(final_output_path, as_attachment=True)
+@app.route("/download/<job_id>")
+def download(job_id):
+    """Download the processed file"""
+    job_data = get_job_data(job_id)
+    if job_data is None or job_data["status"] != JobStatus.COMPLETED:
+        flash("File not ready for download or job expired.")
+        return redirect(url_for("index"))
+    
+    result_path = job_data["result_path"]
+    if not os.path.exists(result_path):
+        flash("The processed file was not found.")
+        return redirect(url_for("index"))
+    
+    return send_file(result_path, as_attachment=True)
+
+############################################################
+# MAIN
+############################################################
 
 if __name__ == "__main__":
     # Configure logging
