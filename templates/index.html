@@ -1,80 +1,26 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Audio Mastering Tool</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body {
-            padding-top: 20px;
-            padding-bottom: 40px;
-            background-color: #f5f5f5;
-        }
-        .container {
-            max-width: 800px;
-        }
-        .card {
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        .range-label {
-            display: flex;
-            justify-content: space-between;
-            margin-top: -15px;
-        }
-        .parameter-controls {
-            margin-top: 20px;
-        }
-        .btn-primary {
-            background-color: #4A6FDC;
-            border-color: #4A6FDC;
-        }
-        .mastering-option {
-            border: 1px solid #ddd;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 15px;
-            cursor: pointer;
-        }
-        .mastering-option.active {
-            border-color: #4A6FDC;
-            background-color: #f0f5ff;
-        }
-        #loading-indicator {
-            display: none;
-            text-align: center;
-            margin-top: 20px;
-        }
-        .centered-text {
-            text-align: center;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1 class="text-center mb-4">Audio Mastering Tool</h1>
-        
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="alert alert-warning alert-dismissible fade show" role="alert">
-                        {{ message }}
-                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                    </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
+{% extends "base.html" %}
+
+{% block title %}MixTool - Professional Audio Mastering{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-10">
+        <div class="card mb-4">
+            <div class="card-body text-center py-5">
+                <h1 class="display-5 fw-bold mb-3">Professional Audio Mastering Made Simple</h1>
+                <p class="lead mb-4">Transform your tracks with our intelligent mastering technology. No complicated settings, just great sounding masters.</p>
+            </div>
+        </div>
         
         <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data" id="masteringForm">
             <div class="card mb-4">
                 <div class="card-header bg-primary text-white">
-                    <h5 class="mb-0">Upload Your Track</h5>
+                    <h4 class="mb-0">Upload Your Track</h4>
                 </div>
                 <div class="card-body">
                     <div class="mb-3">
                         <label for="targetFile" class="form-label">Your Track (to be mastered):</label>
-                        <input type="file" class="form-control" id="targetFile" name="target_file" accept="audio/*" required>
+                        <input type="file" class="form-control form-control-lg" id="targetFile" name="target_file" accept="audio/*" required>
                         <small class="text-muted">Upload any audio file (WAV, MP3, AIFF, etc.)</small>
                     </div>
                     
@@ -90,20 +36,20 @@
             
             <div class="card mb-4">
                 <div class="card-header bg-primary text-white">
-                    <h5 class="mb-0">Mastering Method</h5>
+                    <h4 class="mb-0">Mastering Method</h4>
                 </div>
                 <div class="card-body">
                     <div class="row">
-                        <div class="col-md-6">
-                            <div class="mastering-option active" id="parameterOption" onclick="selectMasteringMethod('parameter')">
+                        <div class="col-md-6 mb-3">
+                            <div class="mastering-option active" id="parameterOption">
                                 <h5>Parameter-Based Mastering</h5>
                                 <p>Use our intelligent algorithm to enhance your track with customizable settings.</p>
                                 <input type="radio" name="mastering_method" value="parameter" checked style="display:none" id="parameterRadio">
                             </div>
                         </div>
                         
-                        <div class="col-md-6">
-                            <div class="mastering-option" id="referenceOption" onclick="selectMasteringMethod('reference')">
+                        <div class="col-md-6 mb-3">
+                            <div class="mastering-option" id="referenceOption">
                                 <h5>Reference-Based Mastering {% if not matchering_available %}<small class="text-muted">(Unavailable)</small>{% endif %}</h5>
                                 <p>Make your track sound like a professionally mastered reference track.</p>
                                 <input type="radio" name="mastering_method" value="reference" style="display:none" id="referenceRadio" {% if not matchering_available %}disabled{% endif %}>
@@ -165,7 +111,7 @@
                                 <span>Quiet (-20 LUFS)</span>
                                 <span>Loud (-6 LUFS)</span>
                             </div>
-                            <div class="centered-text">
+                            <div class="text-center">
                                 <span id="loudnessValue">-14 LUFS</span>
                             </div>
                         </div>
@@ -177,59 +123,113 @@
                 <button type="submit" class="btn btn-primary btn-lg px-5" id="submitButton">Master My Track</button>
             </div>
             
-            <div id="loading-indicator">
-                <div class="spinner-border text-primary" role="status">
-                    <span class="visually-hidden">Loading...</span>
+            <div id="loading-indicator" style="display:none">
+                <div class="text-center">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2">Processing your track... This may take a few minutes.</p>
                 </div>
-                <p class="mt-2">Processing your track... This may take a few minutes.</p>
             </div>
         </form>
     </div>
+</div>
+
+<div class="row mt-5">
+    <div class="col-12">
+        <h2 class="text-center mb-4">How It Works</h2>
+    </div>
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="display-6 mb-3">
+                    <i class="bi bi-upload"></i>
+                </div>
+                <h5>1. Upload Your Track</h5>
+                <p>Select your audio file in any common format (WAV, MP3, AIFF, FLAC).</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="display-6 mb-3">
+                    <i class="bi bi-sliders"></i>
+                </div>
+                <h5>2. Choose Your Settings</h5>
+                <p>Select a mastering method and adjust parameters to suit your track's style.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="display-6 mb-3">
+                    <i class="bi bi-download"></i>
+                </div>
+                <h5>3. Download Your Master</h5>
+                <p>Get your professionally mastered track ready for release.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Handle mastering method selection
+    function selectMasteringMethod(method) {
+        if (method === 'parameter') {
+            document.getElementById('parameterOption').classList.add('active');
+            document.getElementById('referenceOption').classList.remove('active');
+            document.getElementById('parameterRadio').checked = true;
+            document.getElementById('referenceUpload').style.display = 'none';
+            document.getElementById('parameterControls').style.display = 'block';
+        } else {
+            document.getElementById('parameterOption').classList.remove('active');
+            document.getElementById('referenceOption').classList.add('active');
+            document.getElementById('referenceRadio').checked = true;
+            document.getElementById('referenceUpload').style.display = 'block';
+            document.getElementById('parameterControls').style.display = 'block';
+        }
+    }
     
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // Update loudness value display
-        document.getElementById('loudness').addEventListener('input', function() {
-            document.getElementById('loudnessValue').textContent = this.value + ' LUFS';
-        });
+    // Update loudness value display
+    document.getElementById('loudness').addEventListener('input', function() {
+        document.getElementById('loudnessValue').textContent = this.value + ' LUFS';
+    });
+    
+    // Configure form submission
+    document.getElementById('masteringForm').addEventListener('submit', function(event) {
+        // Validate required fields
+        const targetFile = document.getElementById('targetFile');
+        const referenceMethod = document.getElementById('referenceRadio').checked;
+        const referenceFile = document.getElementById('referenceFile');
         
-        // Toggle between mastering methods
-        function selectMasteringMethod(method) {
-            if (method === 'parameter') {
-                document.getElementById('parameterOption').classList.add('active');
-                document.getElementById('referenceOption').classList.remove('active');
-                document.getElementById('parameterRadio').checked = true;
-                document.getElementById('referenceUpload').style.display = 'none';
-                document.getElementById('parameterControls').style.display = 'block';
-            } else {
-                document.getElementById('parameterOption').classList.remove('active');
-                document.getElementById('referenceOption').classList.add('active');
-                document.getElementById('referenceRadio').checked = true;
-                document.getElementById('referenceUpload').style.display = 'block';
-                document.getElementById('parameterControls').style.display = 'block'; // Still show parameters
-            }
+        if (!targetFile.files.length) {
+            event.preventDefault();
+            alert('Please select a track to master');
+            return;
         }
         
-        // Show loading indicator on form submit
-        document.getElementById('masteringForm').addEventListener('submit', function() {
-            // Validate form
-            if (!document.getElementById('targetFile').files.length) {
-                alert('Please select a track to master');
-                return false;
-            }
-            
-            // If reference method is selected, ensure a reference file is provided
-            if (document.getElementById('referenceRadio').checked && 
-                !document.getElementById('referenceFile').files.length) {
-                alert('Please select a reference track or switch to parameter-based mastering');
-                return false;
-            }
-            
-            // Show loading indicator
-            document.getElementById('submitButton').disabled = true;
-            document.getElementById('loading-indicator').style.display = 'block';
-            return true;
-        });
-    </script>
-</body>
-</html>
+        if (referenceMethod && !referenceFile.files.length) {
+            event.preventDefault();
+            alert('Please select a reference track or switch to parameter-based mastering');
+            return;
+        }
+        
+        // Show loading indicator
+        document.getElementById('submitButton').disabled = true;
+        document.getElementById('loading-indicator').style.display = 'block';
+    });
+    
+    // Set up mastering option selection
+    document.getElementById('parameterOption').addEventListener('click', function() {
+        selectMasteringMethod('parameter');
+    });
+    
+    document.getElementById('referenceOption').addEventListener('click', function() {
+        selectMasteringMethod('reference');
+    });
+</script>
+{% endblock %}
