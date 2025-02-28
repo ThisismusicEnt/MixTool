@@ -7,7 +7,8 @@ import wave
 import shutil
 from pathlib import Path
 
-from flask import Flask, request, render_template, redirect, url_for, send_file, flash, jsonify
+from flask import Flask, request, render_template, redirect, url_for, send_file, flash, jsonify, session, abort
+from werkzeug.middleware.proxy_fix import ProxyFix
 from pydub import AudioSegment
 from pydub.effects import normalize
 from pydub.generators import Sine
@@ -18,9 +19,22 @@ try:
     MATCHERING_AVAILABLE = True
 except ImportError:
     MATCHERING_AVAILABLE = False
+    logging.warning("Matchering library not available. Reference-based mastering will be disabled.")
 
+# Initialize Flask app
 app = Flask(__name__)
+
+# Fix for Heroku's proxy setup - THIS IS CRITICAL FOR SOLVING THE REDIRECT ISSUE
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
+# Configure app
 app.secret_key = os.environ.get("SECRET_KEY", "development_secret_key")
+
+# Session cookie settings for Heroku HTTPS - FIXES REDIRECT ISSUES
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['PREFERRED_URL_SCHEME'] = 'https'
 
 # Configure paths - use /tmp for Heroku compatibility
 BASE_DIR = os.environ.get("AUDIO_STORAGE_PATH", "/tmp")
@@ -34,7 +48,7 @@ for directory in [UPLOAD_FOLDER, PROCESSED_FOLDER, LOG_FOLDER]:
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.DEBUG if os.environ.get("FLASK_ENV") == "development" else logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
@@ -42,6 +56,10 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Log app startup
+logger.info(f"Starting MixTool application with MATCHERING_AVAILABLE={MATCHERING_AVAILABLE}")
+logger.info(f"Using directories: UPLOAD={UPLOAD_FOLDER}, PROCESSED={PROCESSED_FOLDER}")
 
 ############################################################
 # AUDIO VALIDATION & CONVERSION
@@ -544,102 +562,210 @@ def cleanup_session_files(session_id, keep_files=None):
 @app.route("/")
 def index():
     """Show the main upload form"""
+    # Ensure directories exist - important for Heroku's ephemeral filesystem
+    for directory in [UPLOAD_FOLDER, PROCESSED_FOLDER, LOG_FOLDER]:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        
     return render_template("index.html", matchering_available=MATCHERING_AVAILABLE)
 
 @app.route("/upload", methods=["POST"])
 def upload():
     """Handle file upload and start mastering process"""
-    # Create session ID
-    session_id = str(uuid.uuid4())
-    logger.info(f"Starting new upload, session ID: {session_id}")
+    logger.info("Upload request received")
     
-    # Get target file
-    if "target_file" not in request.files:
-        flash("Please upload a target audio file.")
+    try:
+        # Create session ID
+        session_id = str(uuid.uuid4())
+        logger.info(f"Starting new upload, session ID: {session_id}")
+        
+        # Get target file
+        if "target_file" not in request.files:
+            flash("Please upload a target audio file.", "warning")
+            return redirect(url_for("index"))
+        
+        target_file = request.files["target_file"]
+        if target_file.filename == "":
+            flash("No file selected.", "warning")
+            return redirect(url_for("index"))
+        
+        # Ensure directories exist
+        for directory in [UPLOAD_FOLDER, PROCESSED_FOLDER]:
+            Path(directory).mkdir(parents=True, exist_ok=True)
+        
+        # Create safe filenames
+        target_filename = "".join(c for c in target_file.filename if c.isalnum() or c in '._- ')
+        target_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_target_{target_filename}")
+        
+        # Save target file
+        logger.info(f"Saving target file to: {target_path}")
+        target_file.save(target_path)
+        
+        # Validate target file
+        if not is_valid_audio_file(target_path):
+            flash("Invalid audio file. Please upload a valid audio file.", "danger")
+            cleanup_session_files(session_id)
+            return redirect(url_for("index"))
+        
+        # Get reference file if provided
+        reference_path = None
+        if "reference_file" in request.files:
+            ref_file = request.files["reference_file"]
+            if ref_file.filename != "":
+                ref_filename = "".join(c for c in ref_file.filename if c.isalnum() or c in '._- ')
+                reference_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_ref_{ref_filename}")
+                logger.info(f"Saving reference file to: {reference_path}")
+                ref_file.save(reference_path)
+        
+        # Get mastering parameters
+        mastering_method = request.form.get("mastering_method", "parameter")
+        export_format = request.form.get("export_format", "wav")
+        
+        # Get parameter-based mastering parameters
+        params = {
+            "use_reference": mastering_method == "reference",
+            "bass_boost": int(request.form.get("bass_boost", 5)),
+            "brightness": int(request.form.get("brightness", 5)),
+            "loudness": float(request.form.get("loudness", -14)),
+            "compression": int(request.form.get("compression", 5)),
+            "stereo_width": int(request.form.get("stereo_width", 5))
+        }
+        
+        # Record starting time for processing
+        start_time = time.time()
+        
+        # Perform mastering
+        output_path, method_used = master_audio(
+            session_id, 
+            target_path, 
+            reference_path, 
+            params, 
+            export_format
+        )
+        
+        # Calculate processing time
+        processing_time = round(time.time() - start_time, 2)
+        logger.info(f"Processing completed in {processing_time} seconds")
+        
+        # Clean up temporary files except the output
+        cleanup_session_files(session_id, keep_files=[output_path])
+        
+        # Store download info in session
+        session['download_info'] = {
+            'path': output_path,
+            'method': method_used,
+            'original_filename': target_filename,
+            'output_format': export_format,
+            'processing_time': processing_time
+        }
+        
+        # Redirect to download page
+        return redirect(url_for('download_page'))
+    
+    except Exception as e:
+        logger.error(f"Upload processing error: {str(e)}", exc_info=True)
+        flash("An error occurred during processing. Please try again.", "danger")
+        return redirect(url_for("index"))
+
+@app.route("/download-page")
+def download_page():
+    """Show download page"""
+    download_info = session.get('download_info')
+    
+    if not download_info or not os.path.exists(download_info.get('path', '')):
+        flash("Your processed file is no longer available. Please upload again.", "warning")
         return redirect(url_for("index"))
     
-    target_file = request.files["target_file"]
-    if target_file.filename == "":
-        flash("No file selected.")
-        return redirect(url_for("index"))
-    
-    # Create safe filenames
-    target_filename = "".join(c for c in target_file.filename if c.isalnum() or c in '._- ')
-    target_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_target_{target_filename}")
-    
-    # Save target file
-    logger.info(f"Saving target file to: {target_path}")
-    target_file.save(target_path)
-    
-    # Validate target file
-    if not is_valid_audio_file(target_path):
-        flash("Invalid audio file. Please upload a valid audio file.")
-        return redirect(url_for("index"))
-    
-    # Get reference file if provided
-    reference_path = None
-    if "reference_file" in request.files:
-        ref_file = request.files["reference_file"]
-        if ref_file.filename != "":
-            ref_filename = "".join(c for c in ref_file.filename if c.isalnum() or c in '._- ')
-            reference_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_ref_{ref_filename}")
-            logger.info(f"Saving reference file to: {reference_path}")
-            ref_file.save(reference_path)
-    
-    # Get mastering parameters
-    mastering_method = request.form.get("mastering_method", "parameter")
-    export_format = request.form.get("export_format", "wav")
-    
-    # Get parameter-based mastering parameters
-    params = {
-        "use_reference": mastering_method == "reference",
-        "bass_boost": int(request.form.get("bass_boost", 5)),
-        "brightness": int(request.form.get("brightness", 5)),
-        "loudness": float(request.form.get("loudness", -14)),
-        "compression": int(request.form.get("compression", 5)),
-        "stereo_width": int(request.form.get("stereo_width", 5))
-    }
-    
-    # Perform mastering
-    output_path, method_used = master_audio(
-        session_id, 
-        target_path, 
-        reference_path, 
-        params, 
-        export_format
+    return render_template(
+        "download.html",
+        download_url=url_for('download_file'),
+        method_used=download_info['method'],
+        original_filename=download_info['original_filename'],
+        output_format=download_info['output_format'],
+        processing_time=download_info['processing_time']
     )
+
+@app.route("/download")
+def download_file():
+    """Download the processed file"""
+    download_info = session.get('download_info')
     
-    # Clean up temporary files except the output
-    cleanup_session_files(session_id, keep_files=[output_path])
+    if not download_info or not os.path.exists(download_info.get('path', '')):
+        flash("Your processed file is no longer available. Please upload again.", "warning")
+        return redirect(url_for("index"))
     
-    # Return the file for download
-    if output_path and os.path.exists(output_path):
-        logger.info(f"Sending file to user: {output_path}")
-        return send_file(output_path, as_attachment=True)
-    else:
-        flash("Error processing audio. Please try again.")
+    # Get the output path
+    output_path = download_info['path']
+    
+    # Get the filename
+    filename = os.path.basename(output_path)
+    
+    # Return the file
+    try:
+        return send_file(output_path, as_attachment=True, download_name=filename)
+    except Exception as e:
+        logger.error(f"Download error: {str(e)}")
+        flash("An error occurred during download. Please try again.", "danger")
         return redirect(url_for("index"))
 
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    flash("File too large. Please upload a smaller file (max 100MB).", "danger")
+    return redirect(url_for('index')), 413
+
+@app.errorhandler(404)
+def page_not_found(error):
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def server_error(error):
+    logger.error(f"Server error: {error}")
+    return render_template('500.html'), 500
+
 ############################################################
-# ERROR HANDLING
+# CLEANUP - Periodic task to remove old files
 ############################################################
 
-@app.errorhandler(Exception)
-def handle_error(e):
-    """Global error handler"""
-    logger.error(f"Unhandled exception: {str(e)}")
-    flash("An unexpected error occurred. Please try again.")
-    return redirect(url_for("index"))
+def cleanup_old_files(max_age_hours=1):
+    """Remove files older than max_age_hours"""
+    try:
+        current_time = time.time()
+        max_age_seconds = max_age_hours * 3600
+        
+        for folder in [UPLOAD_FOLDER, PROCESSED_FOLDER]:
+            if os.path.exists(folder):
+                for filename in os.listdir(folder):
+                    filepath = os.path.join(folder, filename)
+                    file_age = current_time - os.path.getmtime(filepath)
+                    
+                    if file_age > max_age_seconds:
+                        try:
+                            os.remove(filepath)
+                            logger.info(f"Removed old file: {filepath}")
+                        except Exception as e:
+                            logger.error(f"Could not remove old file {filepath}: {e}")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
 
 ############################################################
 # MAIN
 ############################################################
 
 if __name__ == "__main__":
+    # Check if FFmpeg is installed
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+        logger.info("FFmpeg is installed and working")
+    except (subprocess.SubprocessError, FileNotFoundError):
+        logger.error("FFmpeg is not installed or not in PATH. Application will not function correctly.")
+    
     # Get port from environment variable (Heroku sets this)
     port = int(os.environ.get("PORT", 5000))
     
     # In production, don't use debug mode
     debug = os.environ.get("FLASK_ENV") == "development"
     
+    # Run periodic cleanup before starting
+    cleanup_old_files()
+    
+    # Start server
     app.run(host="0.0.0.0", port=port, debug=debug)
