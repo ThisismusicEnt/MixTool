@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MixTool - Audio Mastering</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css">
     <style>
         body {
             background-color: #f5f5f5;
@@ -13,10 +14,24 @@
         }
         .container {
             max-width: 800px;
+            padding-left: 20px;
+            padding-right: 20px;
         }
         .card {
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             margin-bottom: 20px;
+            border-radius: 10px;
+            overflow: hidden;
+            border: none;
+        }
+        .card-header {
+            background-color: #4A6FDC;
+            color: white;
+            font-weight: 600;
+            padding: 15px 20px;
+        }
+        .card-body {
+            padding: 20px;
         }
         .range-label {
             display: flex;
@@ -28,13 +43,24 @@
         .btn-primary {
             background-color: #4A6FDC;
             border-color: #4A6FDC;
+            padding: 10px 25px;
+            font-weight: 500;
+        }
+        .btn-primary:hover {
+            background-color: #3a5dbe;
+            border-color: #3a5dbe;
         }
         .mastering-option {
             border: 1px solid #ddd;
             padding: 15px;
-            border-radius: 5px;
+            border-radius: 10px;
             margin-bottom: 15px;
             cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .mastering-option:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.08);
         }
         .mastering-option.active {
             border-color: #4A6FDC;
@@ -44,6 +70,52 @@
             display: none;
             text-align: center;
             margin-top: 20px;
+        }
+        .file-input-wrapper {
+            position: relative;
+        }
+        .custom-file-button {
+            display: block;
+            width: 100%;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border: 1px dashed #ced4da;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-bottom: 10px;
+        }
+        .custom-file-button:hover {
+            background-color: #e9ecef;
+        }
+        .custom-file-button i {
+            font-size: 24px;
+            margin-bottom: 8px;
+            color: #4A6FDC;
+        }
+        .form-control:focus {
+            border-color: #4A6FDC;
+            box-shadow: 0 0 0 0.25rem rgba(74, 111, 220, 0.25);
+        }
+        .form-range::-webkit-slider-thumb {
+            background-color: #4A6FDC;
+        }
+        .form-range::-moz-range-thumb {
+            background-color: #4A6FDC;
+        }
+        /* Improve mobile experience */
+        @media (max-width: 576px) {
+            .container {
+                padding-left: 15px;
+                padding-right: 15px;
+            }
+            .card-body {
+                padding: 15px;
+            }
+            h1 {
+                font-size: 1.8rem;
+            }
         }
     </style>
 </head>
@@ -64,18 +136,29 @@
         
         <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data" id="masteringForm">
             <div class="card">
-                <div class="card-header bg-primary text-white">
+                <div class="card-header">
                     <h5 class="mb-0">Upload Your Track</h5>
                 </div>
                 <div class="card-body">
-                    <div class="mb-3">
-                        <label for="targetFile" class="form-label">Your Track (to be mastered):</label>
-                        <input type="file" class="form-control" id="targetFile" name="target_file" accept="audio/*" required>
-                        <small class="text-muted">Upload any audio file (WAV, MP3, AIFF, etc.)</small>
+                    <div class="mb-4">
+                        <label for="targetFile" class="form-label fw-bold">Your Track (to be mastered):</label>
+                        
+                        <!-- iOS compatible file input -->
+                        <div class="file-input-wrapper">
+                            <label for="targetFile" class="custom-file-button">
+                                <i class="bi bi-music-note-beamed d-block"></i>
+                                <span id="targetFileName">Select or drop your audio file</span>
+                            </label>
+                            <input type="file" class="form-control visually-hidden" id="targetFile" 
+                                   name="target_file" 
+                                   accept="audio/*,.wav,.mp3,.aiff,.aif,.m4a,.ogg,.flac,.alac,.wav,.aac"
+                                   required>
+                        </div>
+                        <small class="text-muted">Upload any audio file (WAV, MP3, AIFF, etc.) - Maximum size: 100MB</small>
                     </div>
                     
                     <div class="mb-3">
-                        <label for="exportFormat" class="form-label">Export Format:</label>
+                        <label for="exportFormat" class="form-label fw-bold">Export Format:</label>
                         <select class="form-select" id="exportFormat" name="export_format">
                             <option value="wav">WAV (Highest Quality)</option>
                             <option value="mp3">MP3 (Smaller File Size)</option>
@@ -85,7 +168,7 @@
             </div>
             
             <div class="card">
-                <div class="card-header bg-primary text-white">
+                <div class="card-header">
                     <h5 class="mb-0">Mastering Method</h5>
                 </div>
                 <div class="card-body">
@@ -93,7 +176,7 @@
                         <div class="col-md-6 mb-3">
                             <div class="mastering-option active" id="parameterOption" onclick="selectMasteringMethod('parameter')">
                                 <h5>Parameter-Based Mastering</h5>
-                                <p>Use our intelligent algorithm to enhance your track with customizable settings.</p>
+                                <p class="mb-0">Use our intelligent algorithm to enhance your track with customizable settings.</p>
                                 <input type="radio" name="mastering_method" value="parameter" checked style="display:none" id="parameterRadio">
                             </div>
                         </div>
@@ -101,20 +184,30 @@
                         <div class="col-md-6 mb-3">
                             <div class="mastering-option" id="referenceOption" onclick="selectMasteringMethod('reference')">
                                 <h5>Reference-Based Mastering {% if not matchering_available %}<small class="text-muted">(Unavailable)</small>{% endif %}</h5>
-                                <p>Make your track sound like a professionally mastered reference track.</p>
+                                <p class="mb-0">Make your track sound like a professionally mastered reference track.</p>
                                 <input type="radio" name="mastering_method" value="reference" style="display:none" id="referenceRadio" {% if not matchering_available %}disabled{% endif %}>
                             </div>
                         </div>
                     </div>
                     
-                    <div id="referenceUpload" style="display:none" class="mb-3">
-                        <label for="referenceFile" class="form-label">Reference Track:</label>
-                        <input type="file" class="form-control" id="referenceFile" name="reference_file" accept="audio/*">
+                    <div id="referenceUpload" style="display:none" class="mb-4 mt-3">
+                        <label for="referenceFile" class="form-label fw-bold">Reference Track:</label>
+                        
+                        <!-- iOS compatible reference file input -->
+                        <div class="file-input-wrapper">
+                            <label for="referenceFile" class="custom-file-button">
+                                <i class="bi bi-music-note-beamed d-block"></i>
+                                <span id="referenceFileName">Select or drop your reference track</span>
+                            </label>
+                            <input type="file" class="form-control visually-hidden" id="referenceFile" 
+                                   name="reference_file" 
+                                   accept="audio/*,.wav,.mp3,.aiff,.aif,.m4a,.ogg,.flac,.alac,.wav,.aac">
+                        </div>
                         <small class="text-muted">Upload a professionally mastered track that you want your track to sound like</small>
                     </div>
                     
-                    <div id="parameterControls">
-                        <h5 class="mb-3">Mastering Settings</h5>
+                    <div id="parameterControls" class="mt-4">
+                        <h5 class="mb-3 fw-bold">Mastering Settings</h5>
                         
                         <div class="mb-4">
                             <label for="bassBoost" class="form-label">Bass Boost</label>
@@ -160,7 +253,7 @@
                                 <span>Loud (-6 LUFS)</span>
                             </div>
                             <div class="text-center mt-1">
-                                <span id="loudnessValue">-14 LUFS</span>
+                                <span id="loudnessValue" class="badge bg-primary">-14 LUFS</span>
                             </div>
                         </div>
                     </div>
@@ -168,14 +261,19 @@
             </div>
             
             <div class="text-center mb-5">
-                <button type="submit" class="btn btn-primary btn-lg px-5" id="submitButton">Master My Track</button>
+                <button type="submit" class="btn btn-primary btn-lg px-5" id="submitButton">
+                    <i class="bi bi-music-note-list me-2"></i>Master My Track
+                </button>
             </div>
             
-            <div id="loading-indicator">
-                <div class="spinner-border text-primary" role="status">
-                    <span class="visually-hidden">Loading...</span>
+            <div id="loading-indicator" class="card">
+                <div class="card-body text-center py-4">
+                    <div class="spinner-border text-primary mb-3" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <h5>Processing your track...</h5>
+                    <p class="text-muted mb-0">This may take a few minutes depending on your file size.</p>
                 </div>
-                <p class="mt-2">Processing your track... This may take a few minutes.</p>
             </div>
         </form>
     </div>
@@ -205,7 +303,24 @@
         });
         
         // Set up form submission
-        document.getElementById('masteringForm').addEventListener('submit', function() {
+        document.getElementById('masteringForm').addEventListener('submit', function(event) {
+            // Validate form
+            if (!document.getElementById('targetFile').files.length) {
+                event.preventDefault();
+                alert('Please select a track to master');
+                return;
+            }
+            
+            // Check if reference method is selected but no file chosen
+            if (document.getElementById('referenceRadio').checked && 
+                document.getElementById('referenceUpload').style.display !== 'none' && 
+                !document.getElementById('referenceFile').files.length) {
+                event.preventDefault();
+                alert('Please select a reference track or switch to parameter-based mastering');
+                return;
+            }
+            
+            // Show loading indicator
             document.getElementById('submitButton').disabled = true;
             document.getElementById('loading-indicator').style.display = 'block';
         });
@@ -218,6 +333,71 @@
         document.getElementById('referenceOption').addEventListener('click', function() {
             selectMasteringMethod('reference');
         });
+        
+        // Update file name display when file selected
+        document.getElementById('targetFile').addEventListener('change', function() {
+            if (this.files.length > 0) {
+                document.getElementById('targetFileName').textContent = this.files[0].name;
+            } else {
+                document.getElementById('targetFileName').textContent = 'Select or drop your audio file';
+            }
+        });
+        
+        document.getElementById('referenceFile').addEventListener('change', function() {
+            if (this.files.length > 0) {
+                document.getElementById('referenceFileName').textContent = this.files[0].name;
+            } else {
+                document.getElementById('referenceFileName').textContent = 'Select or drop your reference track';
+            }
+        });
+        
+        // Enable drag and drop for file inputs
+        function setupDragDrop(inputId, labelSelector) {
+            const dropArea = document.querySelector(labelSelector);
+            const input = document.getElementById(inputId);
+            
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropArea.addEventListener(eventName, preventDefaults, false);
+            });
+            
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropArea.addEventListener(eventName, highlight, false);
+            });
+            
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropArea.addEventListener(eventName, unhighlight, false);
+            });
+            
+            function highlight() {
+                dropArea.classList.add('bg-light');
+            }
+            
+            function unhighlight() {
+                dropArea.classList.remove('bg-light');
+            }
+            
+            dropArea.addEventListener('drop', handleDrop, false);
+            
+            function handleDrop(e) {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                
+                if (files.length > 0) {
+                    input.files = files;
+                    const event = new Event('change');
+                    input.dispatchEvent(event);
+                }
+            }
+        }
+        
+        // Set up drag and drop for both file inputs
+        setupDragDrop('targetFile', 'label[for="targetFile"]');
+        setupDragDrop('referenceFile', 'label[for="referenceFile"]');
     </script>
 </body>
 </html>
