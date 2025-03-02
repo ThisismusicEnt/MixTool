@@ -1,5 +1,4 @@
 import os
-import subprocess
 import uuid
 import logging
 import time
@@ -11,6 +10,17 @@ from flask import Flask, request, render_template, redirect, url_for, send_file,
 from werkzeug.middleware.proxy_fix import ProxyFix
 from pydub import AudioSegment
 from pydub.generators import Sine
+
+# Try to import matchering for AI processing
+try:
+    import matchering as mg
+    MATCHERING_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("Matchering library is available")
+except ImportError:
+    MATCHERING_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("Matchering library is not available - AI mastering will be disabled")
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -37,47 +47,12 @@ for folder in [UPLOAD_FOLDER, PROCESSED_FOLDER, JOBS_FOLDER]:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Job tracking
-active_jobs = {}
-
 # Define job statuses
 class JobStatus:
     QUEUED = "queued"
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
-
-# Special Heroku path for FFmpeg
-FFMPEG_PATHS = [
-    "/app/vendor/ffmpeg/bin/ffmpeg",  # Heroku buildpack path
-    "/usr/bin/ffmpeg",                # Standard Linux path
-    "/usr/local/bin/ffmpeg",          # Alternate Linux/macOS path
-    "ffmpeg",                         # PATH-based
-]
-
-def get_ffmpeg_path():
-    """Find the correct path for FFmpeg"""
-    for path in FFMPEG_PATHS:
-        try:
-            logger.info(f"Checking FFmpeg path: {path}")
-            result = subprocess.run([path, "-version"], 
-                                   capture_output=True, 
-                                   text=True, 
-                                   timeout=5)
-            if result.returncode == 0:
-                logger.info(f"Found FFmpeg at: {path}")
-                logger.info(f"FFmpeg version: {result.stdout.split('\\n')[0]}")
-                return path
-        except Exception as e:
-            logger.debug(f"FFmpeg not found at {path}: {str(e)}")
-            continue
-    
-    logger.warning("FFmpeg not found in any standard location")
-    return None
-
-# Store FFmpeg path
-FFMPEG_PATH = get_ffmpeg_path()
-logger.info(f"Using FFmpeg path: {FFMPEG_PATH}")
 
 # Job management functions
 def save_job_status(job_id, status, result_path=None, error=None):
@@ -142,72 +117,139 @@ def cleanup_job_files(keep_hours=24):
     except Exception as e:
         logger.error(f"Error during cleanup: {str(e)}")
 
-# Audio processing functions
-def process_audio_file(job_id, input_file, params=None):
-    """Process audio file in background thread"""
+# Main processing function
+def process_audio_file(job_id, target_path, reference_path=None, params=None):
+    """Process audio file in a background thread"""
     try:
         # Update job status
         save_job_status(job_id, JobStatus.PROCESSING)
         
-        # Create output path
-        output_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_output.wav")
-        
-        # Get parameters (with defaults)
-        if not params:
+        # Default parameters
+        if params is None:
             params = {}
             
+        # Get mastering method and parameters
+        mastering_method = params.get('mastering_method', 'parameter')
         export_format = params.get('export_format', 'wav')
         
-        # Process the audio - use PyDub since it's more reliable
-        processing_method, success = process_audio_pydub(input_file, output_wav, params)
+        # Output path
+        output_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_output.wav")
         
-        if success:
-            final_output = output_wav
-            
-            # Convert to MP3 if requested
-            if export_format.lower() == 'mp3':
-                mp3_path = os.path.join(PROCESSED_FOLDER, f"{job_id}_output.mp3")
-                mp3_success = convert_to_mp3(output_wav, mp3_path)
-                
-                if mp3_success:
-                    final_output = mp3_path
-                    logger.info(f"Converted to MP3: {mp3_path}")
-            
-            # Rename with method
-            ext = os.path.splitext(final_output)[1]
-            final_renamed = os.path.join(PROCESSED_FOLDER, f"{job_id}_{processing_method}{ext}")
-            
-            try:
-                os.rename(final_output, final_renamed)
-                final_output = final_renamed
-            except Exception as e:
-                logger.error(f"Rename error: {str(e)}")
-            
-            # Update job status
-            save_job_status(job_id, JobStatus.COMPLETED, final_output)
-            logger.info(f"Processing completed for job {job_id}")
-            
-        else:
+        # Process based on selected method
+        processing_success = False
+        method_used = "Unknown"
+        
+        # Load the target file
+        try:
+            target_audio = AudioSegment.from_file(target_path)
+            logger.info(f"Target audio loaded: {len(target_audio)/1000:.2f}s, {target_audio.channels} channels")
+        except Exception as e:
+            logger.error(f"Error loading target audio: {str(e)}")
             # Create a beep as fallback
             beep_path = os.path.join(PROCESSED_FOLDER, f"{job_id}_Beep_Fallback.wav")
             create_fallback_beep(beep_path)
-            
-            # Update job status
             save_job_status(job_id, JobStatus.COMPLETED, beep_path)
-            logger.info(f"Processing failed, created beep for job {job_id}")
+            return
+        
+        # Try AI/reference mastering if selected and available
+        if mastering_method == 'reference' and MATCHERING_AVAILABLE and reference_path:
+            try:
+                logger.info("Attempting AI/reference-based mastering")
+                
+                # Load reference audio
+                reference_audio = AudioSegment.from_file(reference_path)
+                logger.info(f"Reference audio loaded: {len(reference_audio)/1000:.2f}s")
+                
+                # Save WAV versions for Matchering
+                target_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_target.wav")
+                ref_wav = os.path.join(PROCESSED_FOLDER, f"{job_id}_reference.wav")
+                
+                target_audio.export(target_wav, format="wav")
+                reference_audio.export(ref_wav, format="wav")
+                
+                # Configure Matchering
+                mg.configure(
+                    implementation=mg.HandlerbarsImpl(),
+                    result_bitrate=320,
+                    preview_size=30,
+                    threshold=-40,  # More permissive threshold
+                    tolerance=0.2   # More permissive tolerance
+                )
+                
+                # Process with Matchering
+                mg.process(
+                    target=target_wav,
+                    reference=ref_wav,
+                    results=[mg.pcm16(output_wav)]
+                )
+                
+                # Check if output file was created
+                if os.path.exists(output_wav) and os.path.getsize(output_wav) > 1000:
+                    processing_success = True
+                    method_used = "AI_Reference_Based"
+                    logger.info("AI reference-based mastering successful")
+                else:
+                    logger.error("AI mastering failed to produce valid output")
+            except Exception as e:
+                logger.error(f"AI mastering error: {str(e)}")
+                logger.info("Falling back to parameter-based mastering")
+        
+        # If AI mastering failed or wasn't selected, try parameter-based mastering
+        if not processing_success:
+            logger.info("Starting parameter-based mastering")
+            
+            method_used, processing_success = process_audio_parameters(
+                target_audio, 
+                output_wav, 
+                params
+            )
+        
+        # If all processing failed, create a beep
+        if not processing_success:
+            logger.error("All mastering methods failed")
+            beep_path = os.path.join(PROCESSED_FOLDER, f"{job_id}_Beep_Fallback.wav")
+            create_fallback_beep(beep_path)
+            save_job_status(job_id, JobStatus.COMPLETED, beep_path)
+            return
+        
+        # Convert to MP3 if requested
+        final_output = output_wav
+        
+        if export_format.lower() == 'mp3':
+            mp3_path = os.path.join(PROCESSED_FOLDER, f"{job_id}_output.mp3")
+            mp3_success = convert_to_mp3(output_wav, mp3_path)
+            
+            if mp3_success:
+                final_output = mp3_path
+                logger.info(f"Converted to MP3: {mp3_path}")
+            else:
+                logger.warning("MP3 conversion failed, using WAV")
+        
+        # Rename final output with method
+        ext = os.path.splitext(final_output)[1]
+        final_renamed = os.path.join(PROCESSED_FOLDER, f"{job_id}_{method_used}{ext}")
+        
+        try:
+            os.rename(final_output, final_renamed)
+            final_output = final_renamed
+            logger.info(f"Final output renamed to: {final_output}")
+        except Exception as e:
+            logger.error(f"Rename error: {str(e)}")
+        
+        # Update job status
+        save_job_status(job_id, JobStatus.COMPLETED, final_output)
+        logger.info(f"Processing completed for job {job_id}")
         
     except Exception as e:
         error_msg = f"Processing error: {str(e)}"
         logger.error(error_msg)
         save_job_status(job_id, JobStatus.FAILED, error=error_msg)
 
-def process_audio_pydub(input_file, output_file, params=None):
-    """Process audio using PyDub"""
+def process_audio_parameters(audio, output_file, params=None):
+    """Process audio using parameter-based approach with PyDub"""
     try:
         if params is None:
             params = {}
-        
-        logger.info(f"Processing audio with PyDub: {input_file}")
         
         # Get parameters with defaults
         bass_boost = min(max(int(params.get('bass_boost', 5)), 0), 10)
@@ -217,20 +259,14 @@ def process_audio_pydub(input_file, output_file, params=None):
         target_loudness = min(max(float(params.get('loudness', -14)), -24), -6)
         
         logger.info(f"Using parameters: bass={bass_boost}, brightness={brightness}, "
-                   f"compression={compression}, width={stereo_width}, loudness={target_loudness}")
+                  f"compression={compression}, width={stereo_width}, loudness={target_loudness}")
         
-        # Try to load the file with error handling
-        try:
-            logger.info("Loading audio file...")
-            audio = AudioSegment.from_file(input_file)
-            logger.info(f"Audio loaded: {len(audio)/1000:.2f}s, {audio.channels} channels, {audio.frame_rate}Hz")
-        except Exception as e:
-            logger.error(f"Error loading audio file: {str(e)}")
-            return "Loading_Failed", False
+        # Create a copy of the audio to process
+        processed_audio = audio
         
         # Ensure stereo for processing
-        if audio.channels == 1:
-            audio = audio.set_channels(2)
+        if processed_audio.channels == 1:
+            processed_audio = processed_audio.set_channels(2)
             logger.info("Converted mono to stereo")
         
         # 1. Apply bass boost if not default
@@ -240,14 +276,14 @@ def process_audio_pydub(input_file, output_file, params=None):
                 bass_gain = (bass_boost - 5) * 3  # -15 to +15 dB
                 
                 # Split audio into frequency bands
-                bass_audio = audio.low_pass_filter(200)
+                bass_audio = processed_audio.low_pass_filter(200)
                 bass_audio = bass_audio.apply_gain(bass_gain)
                 
                 # Remove bass from original
-                no_bass = audio.high_pass_filter(200)
+                no_bass = processed_audio.high_pass_filter(200)
                 
                 # Combine processed bass with the rest
-                audio = bass_audio.overlay(no_bass)
+                processed_audio = bass_audio.overlay(no_bass)
                 logger.info(f"Applied bass boost: {bass_gain}dB")
             except Exception as e:
                 logger.error(f"Bass processing error: {str(e)}")
@@ -259,23 +295,23 @@ def process_audio_pydub(input_file, output_file, params=None):
                 treble_gain = (brightness - 5) * 2  # -10 to +10 dB
                 
                 # Split audio into frequency bands
-                treble_audio = audio.high_pass_filter(5000)
+                treble_audio = processed_audio.high_pass_filter(5000)
                 treble_audio = treble_audio.apply_gain(treble_gain)
                 
                 # Remove treble from original
-                no_treble = audio.low_pass_filter(5000)
+                no_treble = processed_audio.low_pass_filter(5000)
                 
                 # Combine processed treble with the rest
-                audio = no_treble.overlay(treble_audio)
+                processed_audio = no_treble.overlay(treble_audio)
                 logger.info(f"Applied brightness: {treble_gain}dB")
             except Exception as e:
                 logger.error(f"Treble processing error: {str(e)}")
         
-        # 3. Apply mild compression
+        # 3. Apply compression if requested
         if compression > 0:
             try:
                 # Normalize first to prepare for compression
-                audio = audio.normalize()
+                processed_audio = processed_audio.normalize()
                 logger.info("Normalized audio for compression")
                 
                 # Simple compression by reducing peaks
@@ -284,19 +320,19 @@ def process_audio_pydub(input_file, output_file, params=None):
                 
                 logger.info(f"Applying compression: threshold={threshold}dB, ratio={ratio}:1")
                 
-                # Process in smaller chunks to prevent memory issues
+                # Process in chunks to avoid memory issues with large files
                 chunk_size = 10000  # 10 seconds
-                total_chunks = len(audio) // chunk_size + 1
+                total_chunks = len(processed_audio) // chunk_size + 1
                 
                 compressed = AudioSegment.empty()
                 for i in range(total_chunks):
                     start = i * chunk_size
-                    end = min(start + chunk_size, len(audio))
+                    end = min(start + chunk_size, len(processed_audio))
                     
-                    if start >= len(audio):
+                    if start >= len(processed_audio):
                         break
                         
-                    chunk = audio[start:end]
+                    chunk = processed_audio[start:end]
                     
                     # Apply compression to chunk
                     chunk_db = chunk.dBFS
@@ -311,37 +347,71 @@ def process_audio_pydub(input_file, output_file, params=None):
                     if i % 10 == 0 and total_chunks > 10:
                         logger.info(f"Compression progress: {i}/{total_chunks} chunks")
                 
-                audio = compressed
+                processed_audio = compressed
                 
                 # Apply makeup gain
                 makeup_gain = compression * 0.5  # 0 to 5 dB
-                audio = audio.apply_gain(makeup_gain)
+                processed_audio = processed_audio.apply_gain(makeup_gain)
                 logger.info(f"Applied makeup gain: {makeup_gain}dB")
                 
             except Exception as e:
                 logger.error(f"Compression error: {str(e)}")
         
-        # 4. Normalize to target loudness
+        # 4. Apply stereo width adjustment if not default
+        if stereo_width != 5:
+            try:
+                # This is a simple stereo width adjustment technique
+                # Extract left and right channels
+                left_channel = processed_audio.split_to_mono()[0]
+                right_channel = processed_audio.split_to_mono()[1]
+                
+                # Calculate width factor (0.5 = mono, 1.0 = normal, 1.5 = wide)
+                width_factor = 0.5 + (stereo_width / 10)
+                
+                # Create modified stereo by mixing channels with width factor
+                # For width > 1.0: Enhance stereo separation
+                # For width < 1.0: Reduce stereo separation
+                if width_factor > 1.0:
+                    # Enhance stereo separation
+                    enhance_factor = width_factor - 1.0
+                    left_channel = left_channel.apply_gain(enhance_factor)
+                    right_channel = right_channel.apply_gain(enhance_factor)
+                elif width_factor < 1.0:
+                    # Mix some of right into left and vice versa
+                    mix_factor = 1.0 - width_factor
+                    left_mix = left_channel.overlay(right_channel.apply_gain(-6 + (mix_factor * 6)))
+                    right_mix = right_channel.overlay(left_channel.apply_gain(-6 + (mix_factor * 6)))
+                    left_channel = left_mix
+                    right_channel = right_mix
+                
+                # Recombine channels
+                processed_audio = AudioSegment.from_mono_audiosegments(left_channel, right_channel)
+                logger.info(f"Applied stereo width adjustment: {width_factor}")
+                
+            except Exception as e:
+                logger.error(f"Stereo width adjustment error: {str(e)}")
+        
+        # 5. Normalize to target loudness
         try:
             # First normalize
-            audio = audio.normalize()
-            current_loudness = audio.dBFS
+            processed_audio = processed_audio.normalize()
+            current_loudness = processed_audio.dBFS
             
             # Then adjust to target
             loudness_adjustment = target_loudness - current_loudness
-            audio = audio.apply_gain(loudness_adjustment)
+            processed_audio = processed_audio.apply_gain(loudness_adjustment)
             logger.info(f"Applied loudness adjustment: {loudness_adjustment:.2f}dB to reach {target_loudness}dB")
         except Exception as e:
             logger.error(f"Loudness normalization error: {str(e)}")
         
-        # 5. Export the processed audio
+        # 6. Export the processed audio
         try:
             logger.info(f"Exporting to {output_file}")
-            audio.export(output_file, format="wav")
+            processed_audio.export(output_file, format="wav")
             
             if os.path.exists(output_file) and os.path.getsize(output_file) > 1000:
                 logger.info(f"Successfully processed audio: {output_file}")
-                return "PyDub_Processing", True
+                return "Parameter_Based", True
             else:
                 logger.error(f"Failed to create valid output file: {output_file}")
                 return "Processing_Failed", False
@@ -390,7 +460,7 @@ def index():
     for folder in [UPLOAD_FOLDER, PROCESSED_FOLDER, JOBS_FOLDER]:
         Path(folder).mkdir(parents=True, exist_ok=True)
     
-    return render_template("index.html")
+    return render_template("index.html", matchering_available=MATCHERING_AVAILABLE)
 
 @app.route("/upload", methods=["POST"])
 def upload():
@@ -417,8 +487,25 @@ def upload():
         
         logger.info(f"Target file saved: {target_path}")
         
+        # Get reference file if provided
+        reference_path = None
+        mastering_method = request.form.get("mastering_method", "parameter")
+        
+        if mastering_method == "reference" and MATCHERING_AVAILABLE:
+            if "reference_file" in request.files and request.files["reference_file"].filename != "":
+                ref_file = request.files["reference_file"]
+                ref_filename = "".join(c for c in ref_file.filename if c.isalnum() or c in '._- ')
+                reference_path = os.path.join(UPLOAD_FOLDER, f"{job_id}_ref_{ref_filename}")
+                ref_file.save(reference_path)
+                logger.info(f"Reference file saved: {reference_path}")
+            else:
+                # If reference method selected but no file provided, fall back to parameter
+                logger.warning("Reference method selected but no file provided. Falling back to parameter method.")
+                mastering_method = "parameter"
+        
         # Get mastering parameters
         params = {
+            'mastering_method': mastering_method,
             'bass_boost': int(request.form.get('bass_boost', 5)),
             'brightness': int(request.form.get('brightness', 5)),
             'compression': int(request.form.get('compression', 5)),
@@ -434,7 +521,7 @@ def upload():
         # Start background processing thread
         thread = threading.Thread(
             target=process_audio_file,
-            args=(job_id, target_path, params)
+            args=(job_id, target_path, reference_path, params)
         )
         thread.daemon = True
         thread.start()
@@ -511,3 +598,4 @@ if __name__ == "__main__":
     debug = os.environ.get("FLASK_ENV") == "development"
     
     app.run(host="0.0.0.0", port=port, debug=debug)
+    
